@@ -4,12 +4,18 @@ import { getMerkleRoot, getProof, airdropData } from './utils/merkletree';
 import ABI from './abi/MerkelAirdrop.json';
 import './App.css';
 
-// 本地 Hardhat 网络默认合约地址（可修改）
-const CONTRACT_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
+// 默认是本地 Hardhat 部署地址；生产环境可用 VITE_AIRDROP_CONTRACT_ADDRESS 覆盖。
+const CONTRACT_ADDRESS = import.meta.env.VITE_AIRDROP_CONTRACT_ADDRESS || '0x5FbDB2315678afecb367f032d93F642f64180aa3';
 
 const formatEth = (value) => Number(value).toLocaleString('en-US', { maximumFractionDigits: 4 });
 const shortAddress = (address) => address ? `${address.slice(0, 6)}...${address.slice(-4)}` : '--';
 const totalAirdrop = airdropData.reduce((sum, item) => sum + Number(item.amount), 0);
+const getNetworkLabel = (network) => {
+  if (!network) return 'Wallet Offline';
+  const chainId = network.chainId.toString();
+  if (chainId === '31337' || chainId === '1337') return `Hardhat Local · ${chainId}`;
+  return `${network.name === 'unknown' ? 'EVM Network' : network.name} · ${chainId}`;
+};
 
 function App() {
   const [account, setAccount] = useState(null);
@@ -22,6 +28,8 @@ function App() {
   const [claimStatus, setClaimStatus] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [selectedUser, setSelectedUser] = useState(airdropData[0]);
+  const [networkLabel, setNetworkLabel] = useState('Wallet Offline');
+  const [contractReady, setContractReady] = useState(false);
 
   useEffect(() => {
     const root = getMerkleRoot();
@@ -40,15 +48,30 @@ function App() {
       const signer = await provider.getSigner();
       const address = await signer.getAddress();
 
-      const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+      const network = await provider.getNetwork();
+      const code = await provider.getCode(CONTRACT_ADDRESS);
+      const hasDeployedContract = code && code !== '0x';
+      const contract = hasDeployedContract ? new ethers.Contract(CONTRACT_ADDRESS, ABI, signer) : null;
 
       setAccount(address);
       setProvider(provider);
       setContract(contract);
+      setNetworkLabel(getNetworkLabel(network));
+      setContractReady(hasDeployedContract);
 
       // 获取账户余额
       const bal = await provider.getBalance(address);
       setBalance(ethers.formatEther(bal));
+
+      if (!hasDeployedContract) {
+        setContractBalance('0');
+        setHasClaimed(false);
+        setClaimStatus(
+          `演示模式已连接：当前钱包网络未在 ${CONTRACT_ADDRESS} 检测到 MerkelAirdrop 合约。\n` +
+          'Vercel 页面可继续使用 Proof 模拟；真实链上领取请切换到本地 Hardhat 网络，或部署合约后配置 VITE_AIRDROP_CONTRACT_ADDRESS。'
+        );
+        return;
+      }
 
       // 获取合约余额
       const cb = await provider.getBalance(CONTRACT_ADDRESS);
@@ -57,6 +80,7 @@ function App() {
       // 检查是否已领取
       const claimed = await contract.hasClaimed(address);
       setHasClaimed(claimed);
+      setClaimStatus('钱包已连接，链上合约已就绪。');
     } catch (err) {
       alert('连接失败: ' + (err.reason || err.message || err));
       setClaimStatus('连接失败: ' + (err.reason || err.message || err));
@@ -64,7 +88,10 @@ function App() {
   };
 
   const claimAirdrop = async () => {
-    if (!contract || !account) return;
+    if (!contract || !account) {
+      setClaimStatus('当前网络未检测到可交互的 MerkelAirdrop 合约，请先部署/切换网络，或使用模拟领取。');
+      return;
+    }
     if (!selectedUser) {
       setClaimStatus('请先选择一个空投用户');
       return;
@@ -128,7 +155,8 @@ function App() {
   };
 
   const selectedProof = selectedUser ? getProof(selectedUser.address, selectedUser.amount) : [];
-  const isSuccess = claimStatus.includes('成功') || claimStatus.includes('提交');
+  const isSuccess = claimStatus.includes('成功') || claimStatus.includes('提交') || claimStatus.includes('已连接') || claimStatus.includes('已就绪');
+  const isNotice = claimStatus.includes('演示模式') || claimStatus.includes('未检测到');
 
   return (
     <div className="app-shell">
@@ -143,7 +171,7 @@ function App() {
           </div>
           <div className="network-pill">
             <span className="pulse-dot" aria-hidden="true" />
-            Local Hardhat Network
+            {networkLabel}
           </div>
         </nav>
 
@@ -207,6 +235,10 @@ function App() {
               <div className="data-row">
                 <span>合约余额</span>
                 <strong>{formatEth(contractBalance)} ETH</strong>
+              </div>
+              <div className="data-row">
+                <span>合约状态</span>
+                <strong className={contractReady ? 'success-text' : 'warning-text'}>{contractReady ? '已部署' : '演示模式'}</strong>
               </div>
               <div className="data-row">
                 <span>领取状态</span>
@@ -307,9 +339,9 @@ function App() {
             <button 
               className="btn btn-primary" 
               onClick={claimAirdrop}
-              disabled={isLoading || !account || !selectedUser}
+              disabled={isLoading || !account || !selectedUser || !contractReady}
             >
-              {isLoading ? '处理中...' : '连接钱包领取'}
+              {isLoading ? '处理中...' : contractReady ? '连接钱包领取' : '链上合约未就绪'}
             </button>
             <button 
               className="btn btn-secondary" 
@@ -321,7 +353,7 @@ function App() {
           </div>
 
           {claimStatus && (
-            <div className={`status ${isSuccess ? 'success' : 'error'}`} role="status" aria-live="polite">
+            <div className={`status ${isNotice ? 'notice' : isSuccess ? 'success' : 'error'}`} role="status" aria-live="polite">
               <pre>{claimStatus}</pre>
             </div>
           )}
