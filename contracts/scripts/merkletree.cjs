@@ -11,6 +11,7 @@ const airdropData = [
   { address: '0x976EA74026E726554dB657fA54763abd0C3a0aa9', amount: '2.5' },
   { address: '0x14dC79964da2C08b23698B3D3cc7Ca32193d9955', amount: '0.8' },
   { address: '0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f', amount: '1.2' },
+  { address: '0x52e598665a4eC24D671F5EeE8dDA970166C859c8', amount: '1.0' },
 ];
 
 function hashLeaf(address, amount) {
