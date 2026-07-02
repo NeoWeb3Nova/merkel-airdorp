@@ -7,6 +7,10 @@ import './App.css';
 // 本地 Hardhat 网络默认合约地址（可修改）
 const CONTRACT_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
 
+const formatEth = (value) => Number(value).toLocaleString('en-US', { maximumFractionDigits: 4 });
+const shortAddress = (address) => address ? `${address.slice(0, 6)}...${address.slice(-4)}` : '--';
+const totalAirdrop = airdropData.reduce((sum, item) => sum + Number(item.amount), 0);
+
 function App() {
   const [account, setAccount] = useState(null);
   const [contract, setContract] = useState(null);
@@ -17,7 +21,7 @@ function App() {
   const [contractBalance, setContractBalance] = useState('0');
   const [claimStatus, setClaimStatus] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedUser, setSelectedUser] = useState(null);
+  const [selectedUser, setSelectedUser] = useState(airdropData[0]);
 
   useEffect(() => {
     const root = getMerkleRoot();
@@ -32,7 +36,7 @@ function App() {
 
     try {
       const provider = new ethers.BrowserProvider(window.ethereum);
-      const accounts = await provider.send('eth_requestAccounts', []);
+      await provider.send('eth_requestAccounts', []);
       const signer = await provider.getSigner();
       const address = await signer.getAddress();
 
@@ -54,8 +58,8 @@ function App() {
       const claimed = await contract.hasClaimed(address);
       setHasClaimed(claimed);
     } catch (err) {
-      console.error('Connection error:', err);
-      setClaimStatus('连接失败: ' + err.message);
+      alert('连接失败: ' + (err.reason || err.message || err));
+      setClaimStatus('连接失败: ' + (err.reason || err.message || err));
     }
   };
 
@@ -99,8 +103,8 @@ function App() {
       const cb = await provider.getBalance(CONTRACT_ADDRESS);
       setContractBalance(ethers.formatEther(cb));
     } catch (err) {
-      console.error('Claim error:', err);
-      setClaimStatus('领取失败: ' + (err.reason || err.message));
+      alert('领取失败: ' + (err.reason || err.message || err));
+      setClaimStatus('领取失败: ' + (err.reason || err.message || err));
     } finally {
       setIsLoading(false);
     }
@@ -123,92 +127,180 @@ function App() {
     setClaimStatus(`模拟领取成功!\n地址: ${selectedUser.address}\n金额: ${selectedUser.amount} ETH\nProof 节点数: ${proof.length}`);
   };
 
+  const selectedProof = selectedUser ? getProof(selectedUser.address, selectedUser.amount) : [];
+  const isSuccess = claimStatus.includes('成功') || claimStatus.includes('提交');
+
   return (
-    <div className="app">
-      <header className="header">
-        <h1> Merkle Tree Airdrop</h1>
-        <p className="subtitle">基于 Merkle Tree 的空投领取演示</p>
+    <div className="app-shell">
+      <div className="cyber-grid" aria-hidden="true" />
+      <div className="scanline" aria-hidden="true" />
+
+      <header className="hero-panel">
+        <nav className="topbar" aria-label="Merkle airdrop status">
+          <div className="brand-mark">
+            <span className="brand-sigil" aria-hidden="true">M</span>
+            <span>Merkel Airdrop</span>
+          </div>
+          <div className="network-pill">
+            <span className="pulse-dot" aria-hidden="true" />
+            Local Hardhat Network
+          </div>
+        </nav>
+
+        <section className="hero-content">
+          <div className="hero-copy">
+            <p className="eyebrow">CYBERPUNK CLAIM TERMINAL / MERKLE VERIFIED</p>
+            <h1>空投领取控制台</h1>
+            <p className="hero-lede">
+              面向 Web3 客户演示的霓虹朋克版 Merkle Tree Airdrop：钱包连接、白名单选择、Proof 预览与链上领取路径集中在一个高可信操作界面。
+            </p>
+            <div className="hero-actions">
+              <button className="btn btn-primary" onClick={connectWallet}>
+                {account ? `已连接 ${shortAddress(account)}` : '连接 MetaMask'}
+              </button>
+              <button className="btn btn-secondary" onClick={simulateClaim} disabled={!selectedUser}>
+                运行 Proof 模拟
+              </button>
+            </div>
+          </div>
+
+          <aside className="terminal-card" aria-label="Airdrop telemetry">
+            <div className="terminal-header">
+              <span>CLAIM_TELEMETRY</span>
+              <span className="terminal-status">LIVE</span>
+            </div>
+            <dl className="metrics-grid">
+              <div>
+                <dt>Eligible Nodes</dt>
+                <dd>{airdropData.length}</dd>
+              </div>
+              <div>
+                <dt>Total Drop</dt>
+                <dd>{formatEth(totalAirdrop)} ETH</dd>
+              </div>
+              <div>
+                <dt>Proof Depth</dt>
+                <dd>{selectedProof.length || '--'}</dd>
+              </div>
+              <div>
+                <dt>Wallet State</dt>
+                <dd>{account ? 'SYNCED' : 'OFFLINE'}</dd>
+              </div>
+            </dl>
+          </aside>
+        </section>
       </header>
 
-      <main className="main">
-        {/* 连接钱包 */}
-        <section className="card connect-section">
-          <h2>钱包连接</h2>
+      <main className="main-grid">
+        <section className="panel wallet-panel">
+          <div className="section-heading">
+            <p className="kicker">01 / Wallet Link</p>
+            <h2>钱包连接</h2>
+          </div>
           {account ? (
-            <div className="account-info">
-              <p><strong>连接地址:</strong> {account}</p>
-              <p><strong>账户余额:</strong> {balance} ETH</p>
-              <p><strong>空投合约余额:</strong> {contractBalance} ETH</p>
-              <p><strong>已领取:</strong> {hasClaimed ? '是' : '否'}</p>
+            <div className="account-stack">
+              <div className="address-display mono" title={account}>{account}</div>
+              <div className="data-row">
+                <span>账户余额</span>
+                <strong>{formatEth(balance)} ETH</strong>
+              </div>
+              <div className="data-row">
+                <span>合约余额</span>
+                <strong>{formatEth(contractBalance)} ETH</strong>
+              </div>
+              <div className="data-row">
+                <span>领取状态</span>
+                <strong className={hasClaimed ? 'danger-text' : 'success-text'}>{hasClaimed ? '已领取' : '未领取'}</strong>
+              </div>
             </div>
           ) : (
-            <button className="btn btn-primary" onClick={connectWallet}>
-              连接 MetaMask
-            </button>
+            <div className="empty-state">
+              <p>连接 MetaMask 后读取链上余额与领取状态。</p>
+              <button className="btn btn-primary" onClick={connectWallet}>连接钱包</button>
+            </div>
           )}
         </section>
 
-        {/* Merkle Tree 信息 */}
-        <section className="card merkle-info">
-          <h2>Merkle Tree 信息</h2>
-          <div className="info-row">
-            <span className="label">Merkle Root:</span>
-            <span className="value mono">{merkleRoot}</span>
+        <section className="panel root-panel">
+          <div className="section-heading">
+            <p className="kicker">02 / Merkle Root</p>
+            <h2>链上验证根</h2>
           </div>
-          <div className="info-row">
-            <span className="label">空投用户总数:</span>
-            <span className="value">{airdropData.length}</span>
+          <div className="root-hash mono">{merkleRoot}</div>
+          <div className="root-meta">
+            <span>32-byte commitment</span>
+            <span>{airdropData.length} eligible accounts</span>
           </div>
         </section>
 
-        {/* 空投列表 */}
-        <section className="card airdrop-list">
-          <h2>空投合格列表</h2>
-          <p className="hint">点击选择一个用户，然后点击领取（模拟模式直接演示）</p>
-          <div className="list-header">
+        <section className="panel roster-panel">
+          <div className="section-heading split-heading">
+            <div>
+              <p className="kicker">03 / Allowlist Matrix</p>
+              <h2>空投合格列表</h2>
+            </div>
+            <span className="chip">Select one node</span>
+          </div>
+          <div className="list-header" aria-hidden="true">
             <span>地址</span>
-            <span>金额 (ETH)</span>
+            <span>金额</span>
             <span>状态</span>
           </div>
-          <div className="list-body">
-            {airdropData.map((item, index) => (
-              <div
-                key={index}
-                className={`list-item ${selectedUser?.address === item.address ? 'selected' : ''}`}
-                onClick={() => setSelectedUser(item)}
-              >
-                <span className="mono">{item.address}</span>
-                <span>{item.amount}</span>
-                <span>{selectedUser?.address === item.address ? '已选中' : '-'}</span>
-              </div>
-            ))}
+          <div className="list-body" role="listbox" aria-label="空投合格地址列表">
+            {airdropData.map((item) => {
+              const isSelected = selectedUser?.address === item.address;
+              return (
+                <button
+                  key={item.address}
+                  type="button"
+                  className={`list-item ${isSelected ? 'selected' : ''}`}
+                  onClick={() => setSelectedUser(item)}
+                  aria-selected={isSelected}
+                  role="option"
+                >
+                  <span className="mono" title={item.address}>{item.address}</span>
+                  <strong>{item.amount} ETH</strong>
+                  <span className="status-pill">{isSelected ? 'LOCKED' : 'READY'}</span>
+                </button>
+              );
+            })}
           </div>
         </section>
 
-        {/* 领取操作 */}
-        <section className="card claim-section">
-          <h2>领取空投</h2>
-          {selectedUser && (
+        <section className="panel claim-panel">
+          <div className="section-heading">
+            <p className="kicker">04 / Claim Execution</p>
+            <h2>领取空投</h2>
+          </div>
+          {selectedUser ? (
             <div className="selected-info">
-              <p><strong>选中用户:</strong> {selectedUser.address}</p>
-              <p><strong>可领金额:</strong> {selectedUser.amount} ETH</p>
-              {(() => {
-                const proof = getProof(selectedUser.address, selectedUser.amount);
-                return (
-                  <div className="proof-preview">
-                    <p><strong>Merkle Proof:</strong></p>
-                    <div className="proof-list">
-                      {proof.map((p, i) => (
-                        <div key={i} className="proof-node mono">
-                          {p}
-                        </div>
-                      ))}
+              <div className="selected-summary">
+                <div>
+                  <span>Selected Wallet</span>
+                  <strong className="mono" title={selectedUser.address}>{shortAddress(selectedUser.address)}</strong>
+                </div>
+                <div>
+                  <span>Allocation</span>
+                  <strong>{selectedUser.amount} ETH</strong>
+                </div>
+              </div>
+              <div className="proof-preview">
+                <div className="proof-title">
+                  <strong>Merkle Proof Stream</strong>
+                  <span>{selectedProof.length} nodes</span>
+                </div>
+                <div className="proof-list">
+                  {selectedProof.map((p, i) => (
+                    <div key={p} className="proof-node mono">
+                      <span>{String(i + 1).padStart(2, '0')}</span>
+                      <code>{p}</code>
                     </div>
-                    <p className="proof-count">Proof 节点数: {proof.length}</p>
-                  </div>
-                );
-              })()}
+                  ))}
+                </div>
+              </div>
             </div>
+          ) : (
+            <p className="hint">请先在左侧白名单矩阵中选择一个用户。</p>
           )}
           
           <div className="button-group">
@@ -229,39 +321,44 @@ function App() {
           </div>
 
           {claimStatus && (
-            <div className={`status ${claimStatus.includes('成功') ? 'success' : 'error'}`}>
+            <div className={`status ${isSuccess ? 'success' : 'error'}`} role="status" aria-live="polite">
               <pre>{claimStatus}</pre>
             </div>
           )}
         </section>
 
-        {/* 原理说明 */}
-        <section className="card explanation">
-          <h2>工作原理</h2>
+        <section className="panel explanation-panel">
+          <div className="section-heading split-heading">
+            <div>
+              <p className="kicker">05 / Protocol Flow</p>
+              <h2>工作原理</h2>
+            </div>
+            <span className="chip">Gas efficient</span>
+          </div>
           <div className="steps">
             <div className="step">
-              <div className="step-num">1</div>
+              <div className="step-num">01</div>
               <div className="step-content">
                 <h3>生成 Merkle Tree</h3>
                 <p>将所有空投用户（地址 + 金额）作为叶子节点，上层节点逐层哈希合并，最终生成唯一的 Merkle Root。</p>
               </div>
             </div>
             <div className="step">
-              <div className="step-num">2</div>
+              <div className="step-num">02</div>
               <div className="step-content">
                 <h3>部署到链上</h3>
                 <p>将 Merkle Root 写入智能合约，每个用户的领取验证都基于这个公开的 root。</p>
               </div>
             </div>
             <div className="step">
-              <div className="step-num">3</div>
+              <div className="step-num">03</div>
               <div className="step-content">
                 <h3>领取验证</h3>
-                <p>用户提供自己的地址、金额和 Merkle Proof，合约通过递归验证确认该用户确实在空投列表中。</p>
+                <p>用户提供自己的地址、金额和 Merkle Proof，合约递归验证该用户确实在空投列表中。</p>
               </div>
             </div>
             <div className="step">
-              <div className="step-num">4</div>
+              <div className="step-num">04</div>
               <div className="step-content">
                 <h3>节省 Gas</h3>
                 <p>无需在链上存储整个空投列表，只需一个 32 bytes 的 root，大幅降低存储和查询成本。</p>
@@ -272,7 +369,8 @@ function App() {
       </main>
 
       <footer className="footer">
-        <p>Merkel Airdrop Demo - 基于 React + Vite + Ethers.js + MerkleTree.js</p>
+        <span>Merkel Airdrop Demo</span>
+        <span>React + Vite + Ethers.js + MerkleTree.js</span>
       </footer>
     </div>
   );
