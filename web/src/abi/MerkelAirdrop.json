@@ -2,6 +2,11 @@
   {
     "inputs": [
       {
+        "internalType": "address",
+        "name": "_airdropToken",
+        "type": "address"
+      },
+      {
         "internalType": "bytes32",
         "name": "_merkleRoot",
         "type": "bytes32"
@@ -9,6 +14,17 @@
     ],
     "stateMutability": "nonpayable",
     "type": "constructor"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "SafeERC20FailedOperation",
+    "type": "error"
   },
   {
     "anonymous": false,
@@ -41,6 +57,19 @@
     ],
     "name": "MerkleRootUpdated",
     "type": "event"
+  },
+  {
+    "inputs": [],
+    "name": "airdropToken",
+    "outputs": [
+      {
+        "internalType": "contract IERC20",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
     "inputs": [
@@ -80,17 +109,10 @@
     "type": "function"
   },
   {
-    "inputs": [],
-    "name": "fundAirdrop",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
     "inputs": [
       {
         "internalType": "address",
-        "name": "user",
+        "name": "",
         "type": "address"
       }
     ],
@@ -146,6 +168,13 @@
   },
   {
     "inputs": [],
+    "name": "syncAirdropAmount",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "totalAirdropAmount",
     "outputs": [
       {
@@ -158,8 +187,14 @@
     "type": "function"
   },
   {
-    "inputs": [],
-    "name": "withdraw",
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      }
+    ],
+    "name": "withdrawTokens",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"

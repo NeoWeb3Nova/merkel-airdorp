@@ -2,8 +2,13 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract MerkelAirdrop {
+    using SafeERC20 for IERC20;
+
+    IERC20 public immutable airdropToken;
     bytes32 public merkleRoot;
     address public owner;
     uint256 public totalAirdropAmount;
@@ -19,8 +24,10 @@ contract MerkelAirdrop {
         _;
     }
 
-    constructor(bytes32 _merkleRoot) {
+    constructor(address _airdropToken, bytes32 _merkleRoot) {
+        require(_airdropToken != address(0), "Invalid token");
         owner = msg.sender;
+        airdropToken = IERC20(_airdropToken);
         merkleRoot = _merkleRoot;
     }
 
@@ -30,15 +37,15 @@ contract MerkelAirdrop {
         emit MerkleRootUpdated(_newRoot);
     }
 
-    // 接收空投资金
-    function fundAirdrop() external payable onlyOwner {
-        totalAirdropAmount += msg.value;
+    // 记录已转入合约的 ERC20 空投额度
+    function syncAirdropAmount() external {
+        totalAirdropAmount = airdropToken.balanceOf(address(this));
     }
 
     // 领取空投
     function claim(bytes32[] calldata proof, uint256 amount) external {
         require(!hasClaimed[msg.sender], "Already claimed");
-        require(address(this).balance >= amount, "Insufficient funds");
+        require(airdropToken.balanceOf(address(this)) >= amount, "Insufficient funds");
 
         // 生成叶子节点: keccak256(abi.encodePacked(address, amount))
         bytes32 leaf = keccak256(abi.encodePacked(msg.sender, amount));
@@ -46,9 +53,8 @@ contract MerkelAirdrop {
         require(MerkleProof.verify(proof, merkleRoot, leaf), "Invalid proof");
 
         hasClaimed[msg.sender] = true;
-        
-        (bool success, ) = msg.sender.call{value: amount}("");
-        require(success, "Transfer failed");
+        totalAirdropAmount = airdropToken.balanceOf(address(this)) - amount;
+        airdropToken.safeTransfer(msg.sender, amount);
 
         emit AirdropClaimed(msg.sender, amount);
     }
@@ -58,13 +64,11 @@ contract MerkelAirdrop {
         return hasClaimed[user];
     }
 
-    // 提取剩余资金
-    function withdraw() external onlyOwner {
-        (bool success, ) = owner.call{value: address(this).balance}("");
-        require(success, "Withdraw failed");
-    }
-
-    receive() external payable {
-        totalAirdropAmount += msg.value;
+    // 提取剩余 ERC20 空投代币
+    function withdrawTokens(address to) external onlyOwner {
+        require(to != address(0), "Invalid recipient");
+        uint256 balance = airdropToken.balanceOf(address(this));
+        totalAirdropAmount = 0;
+        airdropToken.safeTransfer(to, balance);
     }
 }

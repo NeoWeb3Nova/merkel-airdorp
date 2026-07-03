@@ -2,15 +2,15 @@ import { ethers } from 'ethers';
 
 // Example airdrop data (all checksummed addresses)
 const airdropData = [
-  { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', amount: '1.0' },
-  { address: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', amount: '2.0' },
-  { address: '0x90F79bf6EB2c4f870365E785982E1f101E93b906', amount: '0.5' },
-  { address: '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65', amount: '3.0' },
-  { address: '0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc', amount: '1.5' },
-  { address: '0x976EA74026E726554dB657fA54763abd0C3a0aa9', amount: '2.5' },
-  { address: '0x14dC79964da2C08b23698B3D3cc7Ca32193d9955', amount: '0.8' },
-  { address: '0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f', amount: '1.2' },
-  { address: '0x52e598665a4eC24D671F5EeE8dDA970166C859c8', amount: '1.0' },
+  { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', amount: '1000' },
+  { address: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', amount: '2000' },
+  { address: '0x90F79bf6EB2c4f870365E785982E1f101E93b906', amount: '500' },
+  { address: '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65', amount: '3000' },
+  { address: '0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc', amount: '1500' },
+  { address: '0x976EA74026E726554dB657fA54763abd0C3a0aa9', amount: '2500' },
+  { address: '0x14dC79964da2C08b23698B3D3cc7Ca32193d9955', amount: '800' },
+  { address: '0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f', amount: '1200' },
+  { address: '0x52e598665a4eC24D671F5EeE8dDA970166C859c8', amount: '1000' },
 ];
 
 // Hash leaf: keccak256(abi.encodePacked(address, uint256))

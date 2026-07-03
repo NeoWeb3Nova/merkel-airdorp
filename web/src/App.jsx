@@ -4,10 +4,16 @@ import { getMerkleRoot, getProof, airdropData } from './utils/merkletree';
 import ABI from './abi/MerkelAirdrop.json';
 import './App.css';
 
-// 默认是本地 Hardhat 部署地址；生产环境可用 VITE_AIRDROP_CONTRACT_ADDRESS 覆盖。
-const CONTRACT_ADDRESS = import.meta.env.VITE_AIRDROP_CONTRACT_ADDRESS || '0x5FbDB2315678afecb367f032d93F642f64180aa3';
+// 默认指向 Sepolia 真实部署；本地开发可用 VITE_AIRDROP_CONTRACT_ADDRESS / VITE_AIRDROP_TOKEN_ADDRESS 覆盖。
+const CONTRACT_ADDRESS = import.meta.env.VITE_AIRDROP_CONTRACT_ADDRESS || '0xC4c8D8ce56cDFC9b592F01A300Bdc19b6463563A';
+const TOKEN_ADDRESS = import.meta.env.VITE_AIRDROP_TOKEN_ADDRESS || '0xd6dB4Efd0Aea1763eD421D4Fa94C123B4E21D8BC';
+const ERC20_ABI = [
+  'function balanceOf(address account) view returns (uint256)',
+  'function symbol() view returns (string)',
+  'function decimals() view returns (uint8)',
+];
 
-const formatEth = (value) => Number(value).toLocaleString('en-US', { maximumFractionDigits: 4 });
+const formatAmount = (value) => Number(value).toLocaleString('en-US', { maximumFractionDigits: 4 });
 const shortAddress = (address) => address ? `${address.slice(0, 6)}...${address.slice(-4)}` : '--';
 const totalAirdrop = airdropData.reduce((sum, item) => sum + Number(item.amount), 0);
 const getNetworkLabel = (network) => {
@@ -24,7 +30,9 @@ function App() {
   const [merkleRoot, setMerkleRoot] = useState('');
   const [hasClaimed, setHasClaimed] = useState(false);
   const [balance, setBalance] = useState('0');
+  const [tokenBalance, setTokenBalance] = useState('0');
   const [contractBalance, setContractBalance] = useState('0');
+  const [tokenSymbol, setTokenSymbol] = useState('MRKL');
   const [claimStatus, setClaimStatus] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [selectedUser, setSelectedUser] = useState(airdropData[0]);
@@ -65,6 +73,7 @@ function App() {
 
       if (!hasDeployedContract) {
         setContractBalance('0');
+        setTokenBalance('0');
         setHasClaimed(false);
         setClaimStatus(
           `演示模式已连接：当前钱包网络未在 ${CONTRACT_ADDRESS} 检测到 MerkelAirdrop 合约。\n` +
@@ -73,9 +82,18 @@ function App() {
         return;
       }
 
-      // 获取合约余额
-      const cb = await provider.getBalance(CONTRACT_ADDRESS);
-      setContractBalance(ethers.formatEther(cb));
+      // 获取 ERC20 代币余额
+      const tokenAddress = TOKEN_ADDRESS || await contract.airdropToken();
+      const token = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+      const [symbol, decimals, accountTokenBalance, contractTokenBalance] = await Promise.all([
+        token.symbol(),
+        token.decimals(),
+        token.balanceOf(address),
+        token.balanceOf(CONTRACT_ADDRESS),
+      ]);
+      setTokenSymbol(symbol);
+      setTokenBalance(ethers.formatUnits(accountTokenBalance, decimals));
+      setContractBalance(ethers.formatUnits(contractTokenBalance, decimals));
 
       // 检查是否已领取
       const claimed = await contract.hasClaimed(address);
@@ -127,8 +145,15 @@ function App() {
       // 更新余额
       const bal = await provider.getBalance(account);
       setBalance(ethers.formatEther(bal));
-      const cb = await provider.getBalance(CONTRACT_ADDRESS);
-      setContractBalance(ethers.formatEther(cb));
+      const tokenAddress = TOKEN_ADDRESS || await contract.airdropToken();
+      const token = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+      const [decimals, accountTokenBalance, contractTokenBalance] = await Promise.all([
+        token.decimals(),
+        token.balanceOf(account),
+        token.balanceOf(CONTRACT_ADDRESS),
+      ]);
+      setTokenBalance(ethers.formatUnits(accountTokenBalance, decimals));
+      setContractBalance(ethers.formatUnits(contractTokenBalance, decimals));
     } catch (err) {
       alert('领取失败: ' + (err.reason || err.message || err));
       setClaimStatus('领取失败: ' + (err.reason || err.message || err));
@@ -151,7 +176,7 @@ function App() {
       return;
     }
 
-    setClaimStatus(`模拟领取成功!\n地址: ${selectedUser.address}\n金额: ${selectedUser.amount} ETH\nProof 节点数: ${proof.length}`);
+    setClaimStatus(`模拟领取成功!\n地址: ${selectedUser.address}\n金额: ${selectedUser.amount} ${tokenSymbol}\nProof 节点数: ${proof.length}`);
   };
 
   const selectedProof = selectedUser ? getProof(selectedUser.address, selectedUser.amount) : [];
@@ -204,7 +229,7 @@ function App() {
               </div>
               <div>
                 <dt>Total Drop</dt>
-                <dd>{formatEth(totalAirdrop)} ETH</dd>
+                <dd>{formatAmount(totalAirdrop)} {tokenSymbol}</dd>
               </div>
               <div>
                 <dt>Proof Depth</dt>
@@ -230,11 +255,15 @@ function App() {
               <div className="address-display mono" title={account}>{account}</div>
               <div className="data-row">
                 <span>账户余额</span>
-                <strong>{formatEth(balance)} ETH</strong>
+                <strong>{formatAmount(balance)} ETH</strong>
               </div>
               <div className="data-row">
-                <span>合约余额</span>
-                <strong>{formatEth(contractBalance)} ETH</strong>
+                <span>账户代币余额</span>
+                <strong>{formatAmount(tokenBalance)} {tokenSymbol}</strong>
+              </div>
+              <div className="data-row">
+                <span>合约代币余额</span>
+                <strong>{formatAmount(contractBalance)} {tokenSymbol}</strong>
               </div>
               <div className="data-row">
                 <span>合约状态</span>
@@ -291,7 +320,7 @@ function App() {
                   role="option"
                 >
                   <span className="mono" title={item.address}>{item.address}</span>
-                  <strong>{item.amount} ETH</strong>
+                  <strong>{item.amount} {tokenSymbol}</strong>
                   <span className="status-pill">{isSelected ? 'LOCKED' : 'READY'}</span>
                 </button>
               );
@@ -313,7 +342,7 @@ function App() {
                 </div>
                 <div>
                   <span>Allocation</span>
-                  <strong>{selectedUser.amount} ETH</strong>
+                  <strong>{selectedUser.amount} {tokenSymbol}</strong>
                 </div>
               </div>
               <div className="proof-preview">
@@ -386,7 +415,7 @@ function App() {
               <div className="step-num">03</div>
               <div className="step-content">
                 <h3>领取验证</h3>
-                <p>用户提供自己的地址、金额和 Merkle Proof，合约递归验证该用户确实在空投列表中。</p>
+                <p>用户提供自己的地址、ERC20 金额和 Merkle Proof，合约递归验证该用户确实在空投列表中后转出 MRKL 代币。</p>
               </div>
             </div>
             <div className="step">
