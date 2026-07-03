@@ -637,7 +637,7 @@ function App() {
     <Fragment>
       <section className="hero-panel">
         <div className="hero-copy">
-          <p className="eyebrow">{t.eyebrow}</p>
+          <p className="label">{t.eyebrow}</p>
           <h1>{t.heroTitle}</h1>
           <p className="hero-lede">{t.heroLede}</p>
           <div className="hero-actions">
@@ -702,21 +702,25 @@ function App() {
       <main className="portal-layout">
         <section className="panel execution-panel">
           <div className="section-heading">
-            <p className="kicker">{t.workflowKicker}</p>
+            <p className="label">{t.workflowKicker}</p>
             <h2>{t.workflowTitle}</h2>
             <p>{t.workflowCopy}</p>
           </div>
 
           <div className="workflow-steps" aria-label={t.workflowTitle}>
-            {t.claimSteps.map((step, index) => (
-              <div key={step.title} className={`workflow-step ${index === 0 && account ? 'done' : ''} ${index === 1 && selectedUser ? 'done' : ''} ${index === 2 && contractReady ? 'active' : ''}`}>
-                <span>{String(index + 1).padStart(2, '0')}</span>
-                <div>
-                  <h3>{step.title}</h3>
-                  <p>{step.description}</p>
+            {t.claimSteps.map((step, index) => {
+              const isDone = (index === 0 && account) || (index === 1 && selectedUser);
+              const isActive = index === 2 && contractReady;
+              return (
+                <div key={step.title} className={`workflow-step ${isDone ? 'done' : ''} ${isActive ? 'active' : ''}`}>
+                  <span>{isDone ? '✓' : isActive ? '●' : String(index + 1)}</span>
+                  <div>
+                    <h3>{step.title}</h3>
+                    <p>{step.description}</p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {selectedUser ? (
@@ -784,7 +788,7 @@ function App() {
         <aside className="side-stack" aria-label="Wallet and contract state">
           <section className="panel wallet-panel">
             <div className="section-heading compact-heading">
-              <p className="kicker">{t.walletState}</p>
+              <p className="label">{t.walletState}</p>
               <h2>{t.accountAndContract}</h2>
             </div>
             {account ? (
@@ -821,7 +825,7 @@ function App() {
 
           <section className="panel root-panel">
             <div className="section-heading compact-heading">
-              <p className="kicker">Merkle Root</p>
+              <p className="label">Merkle Root</p>
               <h2>{t.merkleRoot}</h2>
             </div>
             <div className="root-hash mono">{merkleRoot}</div>
@@ -835,7 +839,7 @@ function App() {
         <section className="panel roster-panel">
           <div className="section-heading split-heading">
             <div>
-              <p className="kicker">{t.allowlist}</p>
+              <p className="label">{t.allowlist}</p>
               <h2>{t.allowlistTitle}</h2>
               <p>{t.allowlistCopy}</p>
             </div>
@@ -870,7 +874,7 @@ function App() {
         <section className="panel explanation-panel">
           <div className="section-heading split-heading">
             <div>
-              <p className="kicker">{t.protocolKicker}</p>
+              <p className="label">{t.protocolKicker}</p>
               <h2>{t.protocolTitle}</h2>
             </div>
             <span className="chip neutral">{t.onChainVerifiable}</span>
@@ -893,7 +897,7 @@ function App() {
     <main className="guide-page">
       <section className="guide-hero panel">
         <div>
-          <p className="eyebrow">{t.guideEyebrow}</p>
+          <p className="label">{t.guideEyebrow}</p>
           <h1>{t.guideTitle}</h1>
           <p className="hero-lede">{t.guideLede}</p>
           <span className="guide-source">{t.guideSource}</span>
