@@ -17,6 +17,12 @@
 
 ---
 
+<p align="center">
+  <img src="assets/merkel-airdrop-claim-portal.png" alt="Merkel Airdrop 领取门户预览" width="100%">
+</p>
+
+---
+
 Merkel Airdrop 是一个基于 Merkle Tree 的 ERC20 空投领取门户。当前版本已经从早期 ETH 空投 Demo 升级为“链上 ERC20 分发 + React 可信领取门户”：合约只保存 Merkle Root，用户通过钱包提交 Merkle Proof 领取 MRKL 代币，前端同时提供链上领取、Proof 模拟、双语开发指南和演示白名单注册。
 
 ## 当前状态

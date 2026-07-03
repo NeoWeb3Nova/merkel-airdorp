@@ -17,6 +17,12 @@
 
 ---
 
+<p align="center">
+  <img src="assets/merkel-airdrop-claim-portal.png" alt="Merkel Airdrop claim portal preview" width="100%">
+</p>
+
+---
+
 Merkel Airdrop is an ERC20 claim portal based on Merkle Tree proofs. The current version has moved beyond the early ETH-airdrop demo into an on-chain ERC20 distribution system with a React claim portal: the contract stores only the Merkle Root, users submit Merkle Proofs from their wallet to claim MRKL tokens, and the frontend provides real claiming, proof simulation, bilingual developer guides, and demo allowlist registration.
 
 ## Current Status
