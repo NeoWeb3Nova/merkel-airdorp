@@ -7,4 +7,16 @@ export default defineConfig({
   plugins: [react(), nodePolyfills({
     include: ['buffer', 'util', 'events'],
   })],
+  build: {
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/ethers')) {
+            return 'ethers';
+          }
+        },
+      },
+    },
+  },
 })
