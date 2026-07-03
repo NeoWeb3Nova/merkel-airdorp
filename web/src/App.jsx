@@ -718,9 +718,6 @@ function App() {
             <button className="btn btn-ghost" onClick={simulateClaim} disabled={!selectedUser}>
               {t.simulateProof}
             </button>
-            <a className="btn btn-ghost anchor-btn" href={GITHUB_REPO_URL} target="_blank" rel="noreferrer">
-              {t.repo}
-            </a>
           </div>
         </div>
 
@@ -979,14 +976,15 @@ function App() {
               const isSelected = selectedUser?.address === item.address;
               const isCustom = customUsers.some(u => u.address.toLowerCase() === item.address.toLowerCase());
               return (
-                <button
+                <div
                   key={item.address}
-                  type="button"
                   className={`list-item ${isSelected ? 'selected' : ''}`}
                   onClick={() => setSelectedUser(item)}
-                  aria-selected={isSelected}
                   role="option"
-                  style={{ position: 'relative' }}
+                  aria-selected={isSelected}
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedUser(item); } }}
+                  style={{ position: 'relative', cursor: 'pointer' }}
                 >
                   <span className="mono" title={item.address}>{item.address}</span>
                   <strong>{item.amount} {tokenSymbol}</strong>
@@ -1004,7 +1002,7 @@ function App() {
                       </button>
                     )}
                   </span>
-                </button>
+                </div>
               );
             })}
           </div>

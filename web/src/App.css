@@ -121,6 +121,8 @@ a {
 
 /* 容器 */
 .site-header,
+.hero-panel,
+.trust-strip,
 .portal-layout,
 .guide-page,
 .footer {
@@ -310,10 +312,9 @@ a {
 /* === Hero Panel === */
 .hero-panel {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(300px, 0.65fr);
-  gap: 24px;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.42fr);
+  gap: 16px;
   margin-top: 20px;
-  padding: clamp(24px, 4vw, 48px);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   background:
@@ -321,11 +322,25 @@ a {
     linear-gradient(180deg, var(--bg-surface), var(--bg-elevated));
   box-shadow: var(--shadow-lg);
   transition: border-color 200ms ease, box-shadow 200ms ease;
+  overflow: hidden;
 }
 
 .hero-panel:hover {
   border-color: var(--border-hover);
   box-shadow: var(--shadow-elevated);
+}
+
+.hero-copy {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+}
+
+.claim-summary-card {
+  padding: 20px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 
 /* 删除小写大写 eyebrow，改为正常的微小标签 */
@@ -1128,7 +1143,6 @@ a {
   width: 100%;
   min-height: 52px;
   padding: 12px;
-  cursor: pointer;
   color: var(--text-secondary);
   text-align: left;
   border: 1px solid var(--border);
