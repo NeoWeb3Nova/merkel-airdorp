@@ -1,8 +1,8 @@
-/* === Global Reset — only styles NOT already in App.css === */
+/* === Global Reset — light theme === */
 
 ::selection {
-  background: rgba(212, 150, 26, 0.25);
-  color: #E8E9EB;
+  background: rgba(83, 58, 253, 0.15);
+  color: #0d253d;
 }
 
 /* Prevent horizontal scroll on narrow viewports */
