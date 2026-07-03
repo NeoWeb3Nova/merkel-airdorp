@@ -1,0 +1,8 @@
+{
+  "name": "merkel-airdorp",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "cd web && npm install && npm run build && mv dist ../dist"
+  }
+}
