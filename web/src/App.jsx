@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { ethers } from 'ethers';
-import guideMarkdownZh from '../../GUIDE.md?raw';
-import guideMarkdownEn from '../../GUIDE.en.md?raw';
+import guideMarkdownZh from './content/GUIDE.md?raw';
+import guideMarkdownEn from './content/GUIDE.en.md?raw';
 import { getMerkleRoot, getProof, airdropData, setAirdropData, mergeAirdropData, isEligible } from './utils/merkletree';
 import ABI from './abi/MerkelAirdrop.json';
 import './App.css';
@@ -9,6 +9,34 @@ import './App.css';
 // 默认指向 Sepolia 真实部署；本地开发可用 VITE_AIRDROP_CONTRACT_ADDRESS / VITE_AIRDROP_TOKEN_ADDRESS 覆盖。
 const CONTRACT_ADDRESS = import.meta.env.VITE_AIRDROP_CONTRACT_ADDRESS || '0xC4c8D8ce56cDFC9b592F01A300Bdc19b6463563A';
 const TOKEN_ADDRESS = import.meta.env.VITE_AIRDROP_TOKEN_ADDRESS || '0xd6dB4Efd0Aea1763eD421D4Fa94C123B4E21D8BC';
+const EXPECTED_CHAIN_ID = BigInt(import.meta.env.VITE_AIRDROP_CHAIN_ID || '11155111');
+const EXPECTED_CHAIN_HEX = `0x${EXPECTED_CHAIN_ID.toString(16)}`;
+const EXPECTED_NETWORK_LABEL = EXPECTED_CHAIN_ID === 11155111n
+  ? 'Sepolia · 11155111'
+  : EXPECTED_CHAIN_ID === 31337n || EXPECTED_CHAIN_ID === 1337n
+    ? `Hardhat Local · ${EXPECTED_CHAIN_ID.toString()}`
+    : `Chain · ${EXPECTED_CHAIN_ID.toString()}`;
+const CHAIN_CONFIGS = {
+  11155111: {
+    chainId: '0xaa36a7',
+    chainName: 'Sepolia',
+    nativeCurrency: { name: 'Sepolia Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: ['https://ethereum-sepolia.publicnode.com'],
+    blockExplorerUrls: ['https://sepolia.etherscan.io'],
+  },
+  31337: {
+    chainId: '0x7a69',
+    chainName: 'Hardhat Local',
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: ['http://127.0.0.1:8545'],
+  },
+  1337: {
+    chainId: '0x539',
+    chainName: 'Hardhat Local',
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: ['http://127.0.0.1:8545'],
+  },
+};
 const GITHUB_REPO_URL = 'https://github.com/NeoWeb3Nova/merkel-airdorp';
 const ERC20_ABI = [
   'function balanceOf(address account) view returns (uint256)',
@@ -30,9 +58,10 @@ const translations = {
     installMetamask: '请安装 MetaMask!',
     connectFailed: '连接失败: ',
     claimFailed: '领取失败: ',
+    networkSwitchFailed: `请先在钱包中切换到 ${EXPECTED_NETWORK_LABEL}。当前合约部署在该网络，其他网络会显示“合约未就绪”。`,
     demoConnected:
       `演示模式已连接：当前钱包网络未在 ${CONTRACT_ADDRESS} 检测到 MerkelAirdrop 合约。\n` +
-      'Vercel 页面可继续使用 Proof 模拟；真实链上领取请切换到本地 Hardhat 网络，或部署合约后配置 VITE_AIRDROP_CONTRACT_ADDRESS。',
+      `Vercel 页面可继续使用 Proof 模拟；真实链上领取请切换到 ${EXPECTED_NETWORK_LABEL}，或部署合约后配置 VITE_AIRDROP_CONTRACT_ADDRESS 与 VITE_AIRDROP_CHAIN_ID。`,
     walletReady: '钱包已连接，链上合约已就绪。',
     noInteractiveContract: '当前网络未检测到可交互的 MerkelAirdrop 合约，请先部署/切换网络，或使用模拟领取。',
     selectUserFirst: '请先选择一个空投用户',
@@ -148,9 +177,10 @@ const translations = {
     installMetamask: 'Please install MetaMask!',
     connectFailed: 'Connection failed: ',
     claimFailed: 'Claim failed: ',
+    networkSwitchFailed: `Please switch your wallet to ${EXPECTED_NETWORK_LABEL}. The contract is deployed on that network; other networks show “Contract not ready”.`,
     demoConnected:
       `Demo mode connected: no MerkelAirdrop contract was detected at ${CONTRACT_ADDRESS} on the current wallet network.\n` +
-      'You can still use proof simulation on the Vercel page. For a real on-chain claim, switch to the local Hardhat network or deploy the contract and set VITE_AIRDROP_CONTRACT_ADDRESS.',
+      `You can still use proof simulation on the Vercel page. For a real on-chain claim, switch to ${EXPECTED_NETWORK_LABEL}, or deploy the contract and set VITE_AIRDROP_CONTRACT_ADDRESS plus VITE_AIRDROP_CHAIN_ID.`,
     walletReady: 'Wallet connected. The on-chain contract is ready.',
     noInteractiveContract: 'No interactive MerkelAirdrop contract was detected on the current network. Deploy/switch network first, or use simulated verification.',
     selectUserFirst: 'Select an airdrop user first.',
@@ -442,6 +472,27 @@ const getNetworkLabel = (network, t) => {
   return `${network.name === 'unknown' ? t.evmNetwork : network.name} · ${chainId}`;
 };
 
+const switchToExpectedNetwork = async () => {
+  if (!window.ethereum?.request) return false;
+
+  try {
+    await window.ethereum.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: EXPECTED_CHAIN_HEX }],
+    });
+    return true;
+  } catch (err) {
+    if (err?.code === 4902 && CHAIN_CONFIGS[Number(EXPECTED_CHAIN_ID)]) {
+      await window.ethereum.request({
+        method: 'wallet_addEthereumChain',
+        params: [CHAIN_CONFIGS[Number(EXPECTED_CHAIN_ID)]],
+      });
+      return true;
+    }
+    throw err;
+  }
+};
+
 function App() {
   const [language, setLanguage] = useState(getInitialLanguage);
   const [page, setPage] = useState(normalizeRoute);
@@ -510,12 +561,26 @@ function App() {
     }
 
     try {
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      let provider = new ethers.BrowserProvider(window.ethereum);
       await provider.send('eth_requestAccounts', []);
+      let network = await provider.getNetwork();
+
+      if (network.chainId !== EXPECTED_CHAIN_ID) {
+        await switchToExpectedNetwork();
+        provider = new ethers.BrowserProvider(window.ethereum);
+        network = await provider.getNetwork();
+      }
+
+      if (network.chainId !== EXPECTED_CHAIN_ID) {
+        setNetworkLabel(getNetworkLabel(network, t));
+        setContractReady(false);
+        setContract(null);
+        setStatus(t.networkSwitchFailed, 'notice');
+        return;
+      }
+
       const signer = await provider.getSigner();
       const address = await signer.getAddress();
-
-      const network = await provider.getNetwork();
       const code = await provider.getCode(CONTRACT_ADDRESS);
       const hasDeployedContract = code && code !== '0x';
       const contract = hasDeployedContract ? new ethers.Contract(CONTRACT_ADDRESS, ABI, signer) : null;
@@ -553,7 +618,10 @@ function App() {
       setHasClaimed(claimed);
       setStatus(t.walletReady, 'success');
     } catch (err) {
-      const message = t.connectFailed + (err.reason || err.message || err);
+      const isNetworkSwitchError = err?.code === 4001 || err?.code === 4902 || err?.code === -32603;
+      const message = isNetworkSwitchError
+        ? t.networkSwitchFailed
+        : t.connectFailed + (err.reason || err.message || err);
       setStatus(message, 'error');
     }
   };
@@ -696,7 +764,7 @@ function App() {
             <span className="pulse-dot" aria-hidden="true" />
             {networkLabel}
           </span>
-          <button className="btn btn-secondary compact" onClick={connectWallet}>
+          <button className="btn btn-secondary compact" onClick={connectWallet} type="button">
             {account ? shortAddress(account) : t.connectWallet}
           </button>
         </div>
@@ -712,10 +780,10 @@ function App() {
           <h1>{t.heroTitle}</h1>
           <p className="hero-lede">{t.heroLede}</p>
           <div className="hero-actions">
-            <button className="btn btn-primary" onClick={connectWallet}>
+            <button className="btn btn-primary" onClick={connectWallet} type="button">
               {account ? `${t.wallet} ${shortAddress(account)}` : t.connectMetamask}
             </button>
-            <button className="btn btn-ghost" onClick={simulateClaim} disabled={!selectedUser}>
+            <button className="btn btn-ghost" onClick={simulateClaim} disabled={!selectedUser} type="button">
               {t.simulateProof}
             </button>
           </div>
@@ -834,6 +902,7 @@ function App() {
               className="btn btn-primary"
               onClick={claimAirdrop}
               disabled={isLoading || !account || !selectedUser || !contractReady}
+              type="button"
             >
               {isLoading ? t.processing : contractReady ? t.claimOnChain : t.contractNotReady}
             </button>
@@ -841,12 +910,14 @@ function App() {
               className="btn btn-secondary"
               onClick={simulateClaim}
               disabled={!selectedUser}
+              type="button"
             >
               {t.simulateVerify}
             </button>
             <button
               className="btn btn-ghost"
               onClick={() => setRegistrationOpen(!registrationOpen)}
+              type="button"
             >
               {registrationOpen ? t.registerCancel : t.registerCta}
             </button>
@@ -886,10 +957,10 @@ function App() {
                 <span>{tokenSymbol}</span>
               </div>
               <div className="button-group" style={{ marginTop: 0 }}>
-                <button className="btn btn-primary" onClick={registerForAirdrop} disabled={!account}>
+                <button className="btn btn-primary" onClick={registerForAirdrop} disabled={!account} type="button">
                   {t.registerConfirm}
                 </button>
-                <button className="btn btn-secondary" onClick={() => setRegistrationOpen(false)}>
+                <button className="btn btn-secondary" onClick={() => setRegistrationOpen(false)} type="button">
                   {t.registerCancel}
                 </button>
               </div>
@@ -939,7 +1010,7 @@ function App() {
             ) : (
               <div className="empty-state">
                 <p>{t.connectWalletReadState}</p>
-                <button className="btn btn-primary" onClick={connectWallet}>{t.connectWallet}</button>
+                <button className="btn btn-primary" onClick={connectWallet} type="button">{t.connectWallet}</button>
               </div>
             )}
           </section>
@@ -1057,8 +1128,8 @@ function App() {
 
   return (
     <div className="app-shell">
-      <Header />
-      {page === 'guide' ? <GuidePage /> : <ClaimPage />}
+      {Header()}
+      {page === 'guide' ? GuidePage() : ClaimPage()}
       <footer className="footer">
         <span>Merkel Airdrop Claim Portal</span>
         <a href={GITHUB_REPO_URL} target="_blank" rel="noreferrer">{t.repo}</a>
