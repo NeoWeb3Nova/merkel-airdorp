@@ -1,549 +1,401 @@
-# Merkel Airdrop 开发教程
+# Merkel Airdrop 开发与部署指南
 
-从零搭建一个基于 Merkle Tree 的以太坊空投系统。
+这份指南同步当前改造后的项目：Merkel Airdrop 已从早期 ETH 空投示例升级为 ERC20 MRKL 代币空投系统，包含 Solidity 合约、Hardhat 测试/部署脚本、React + Vite 领取门户、Sepolia 默认部署配置和前端内嵌双语文档页。
 
 ## 目录
 
-1. [项目概述](#1-项目概述)
-2. [环境准备](#2-环境准备)
-3. [第一步：编写 Solidity 智能合约](#3-第一步编写-solidity-智能合约)
-4. [第二步：Merkle Tree 工具类](#4-第二步-merkle-tree-工具类)
-5. [第三步：Hardhat 配置与部署](#5-第三步-hardhat-配置与部署)
-6. [第四步：React + Vite 前端](#6-第四步-react--vite-前端)
-7. [第五步：链上互动](#7-第五步链上互动)
-8. [第六步：添加新空投地址](#8-第六步添加新空投地址)
-9. [常见问题](#9-常见问题)
+1. [项目模块](#1-项目模块)
+2. [端到端架构](#2-端到端架构)
+3. [环境准备](#3-环境准备)
+4. [合约开发](#4-合约开发)
+5. [Merkle 数据与 Root](#5-merkle-数据与-root)
+6. [本地部署与领取](#6-本地部署与领取)
+7. [前端开发](#7-前端开发)
+8. [Sepolia 与 Vercel 部署](#8-sepolia-与-vercel-部署)
+9. [更新白名单](#9-更新白名单)
+10. [测试与验证](#10-测试与验证)
+11. [常见问题](#11-常见问题)
 
 ---
 
-## 1. 项目概述
+## 1. 项目模块
 
-### 什么是 Merkle Tree 空投
-
-传统空投的问题：如果白名单有 10,000 个地址，把所有地址写到链上存储费用极高，用户查询也很贵。
-
-Merkle Tree 解法：
-- 只在链上存储 32 bytes 的 **Merkle Root**
-- 用户领取时提交自己的 **Proof**（就是路径上的几个兄弟节点）
-- 合约逐层哈希验证，确认用户在白名单中
-
-Gas 节省：由 O(n) 降到 O(log n)，1 万用户只需 14 个节点就能验证。
-
-### 核心流程
-
-```
-用户地址 + 金额  →  哈希为叶子
-两两合并  →  第一层节点
-一直合并  →  最终得到 Root
-→ 存储到链上合约
-```
+| 模块 | 路径 | 说明 |
+|---|---|---|
+| ERC20 代币 | `contracts/contracts/AirdropToken.sol` | OpenZeppelin ERC20，名称 `Merkel Airdrop Token`，symbol `MRKL`，owner 可 mint |
+| 空投合约 | `contracts/contracts/MerkelAirdrop.sol` | 保存 ERC20 地址与 Merkle Root，验证 Proof 并转账 MRKL |
+| Merkle 工具 | `contracts/scripts/merkletree.cjs` | CommonJS 版本，供 Hardhat 部署脚本使用 |
+| 前端 Merkle 工具 | `web/src/utils/merkletree.js` | ESM 版本，供 React 页面生成 Root/Proof 和演示白名单使用 |
+| 部署脚本 | `contracts/scripts/deploy.js` | 部署 Token、部署 Airdrop、mint 总额度到空投合约、输出 Vite 环境变量 |
+| 合约测试 | `contracts/test/MerkelAirdropERC20.test.js` | 覆盖 token 地址、领取、防重复/无效 proof、owner 提取 |
+| 前端门户 | `web/src/App.jsx` | 钱包连接、网络切换、链上状态读取、领取、模拟、文档渲染 |
+| 前端文档 | `web/src/content/GUIDE.md` / `GUIDE.en.md` | 在 `/#guide` 页面内嵌渲染 |
 
 ---
 
-## 2. 环境准备
+## 2. 端到端架构
+
+```text
+白名单地址 + MRKL 额度
+        │
+        ▼
+contracts/scripts/merkletree.cjs 与 web/src/utils/merkletree.js
+生成 leaf = keccak256(abi.encodePacked(address, amount))
+        │
+        ▼
+Merkle Root = 0x9fb630f0f3bdeb2629b70ee780df4ff4f6c39a7ecb3b78a47322b61dd708e830
+        │
+        ├─ 部署脚本写入 MerkelAirdrop(tokenAddress, root)
+        │
+        └─ 前端为选中地址生成 proof
+                 │
+                 ▼
+用户连接钱包 → 切换目标网络 → contract.claim(proof, amountWei)
+                 │
+                 ▼
+合约验证 proof、检查 hasClaimed、转账 MRKL、记录已领取
+```
+
+关键不变量：
+
+- 合约 `merkleRoot` 必须等于当前基础白名单生成的 Root。
+- 前端展示的基础白名单必须与部署脚本的白名单一致。
+- `amount` 在工具中用字符串 MRKL 数量表示，哈希和合约调用前统一 `ethers.parseEther(amount)`。
+- 前端本地演示名单只用于模拟 Proof，不代表链上可领取资格。
+
+---
+
+## 3. 环境准备
 
 需要：
+
 - Node.js >= 18
-- MetaMask 插件
-- Git（可选）
+- npm
+- MetaMask 或兼容 EVM 钱包
+- Git
+
+安装依赖：
 
 ```bash
-node -v   # 确认 >= 18
+npm install --prefix contracts
+npm install --prefix web
+```
+
+确认版本：
+
+```bash
+node -v
 npm -v
 ```
 
 ---
 
-## 3. 第一步：编写 Solidity 智能合约
+## 4. 合约开发
 
-创建目录结构：
+### 4.1 `AirdropToken.sol`
 
-```bash
-mkdir -p merkel-airdorp/contracts/contracts
-mkdir -p merkel-airdorp/web/src
-```
+`AirdropToken` 继承 OpenZeppelin `ERC20` 与 `Ownable`：
 
-### 3.1 空投合约代码
+- 名称：`Merkel Airdrop Token`
+- Symbol：`MRKL`
+- `mint(address to, uint256 amount)` 仅 owner 可调用
 
-`contracts/contracts/MerkelAirdrop.sol`：
+### 4.2 `MerkelAirdrop.sol`
 
-```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+核心状态：
 
-import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+| 状态 | 说明 |
+|---|---|
+| `IERC20 public immutable airdropToken` | 空投 ERC20 地址 |
+| `bytes32 public merkleRoot` | 当前白名单承诺 |
+| `address public owner` | 运维 owner |
+| `uint256 public totalAirdropAmount` | 记录的合约代币储备 |
+| `mapping(address => bool) public hasClaimed` | 防重复领取 |
 
-contract MerkelAirdrop {
-    bytes32 public merkleRoot;
-    address public owner;
-    uint256 public totalAirdropAmount;
+核心函数：
 
-    mapping(address => bool) public hasClaimed;
-
-    event MerkleRootUpdated(bytes32 newRoot);
-    event AirdropClaimed(address indexed user, uint256 amount);
-
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Not owner");
-        _;
-    }
-
-    constructor(bytes32 _merkleRoot) {
-        owner = msg.sender;
-        merkleRoot = _merkleRoot;
-    }
-
-    function setMerkleRoot(bytes32 _newRoot) external onlyOwner {
-        merkleRoot = _newRoot;
-        emit MerkleRootUpdated(_newRoot);
-    }
-
-    function fundAirdrop() external payable onlyOwner {
-        totalAirdropAmount += msg.value;
-    }
-
-    function claim(bytes32[] calldata proof, uint256 amount) external {
-        require(!hasClaimed[msg.sender], "Already claimed");
-        require(address(this).balance >= amount, "Insufficient funds");
-
-        bytes32 leaf = keccak256(abi.encodePacked(msg.sender, amount));
-        require(MerkleProof.verify(proof, merkleRoot, leaf), "Invalid proof");
-
-        hasClaimed[msg.sender] = true;
-        (bool success, ) = msg.sender.call{value: amount}("");
-        require(success, "Transfer failed");
-
-        emit AirdropClaimed(msg.sender, amount);
-    }
-
-    function checkClaimed(address user) external view returns (bool) {
-        return hasClaimed[user];
-    }
-
-    function withdraw() external onlyOwner {
-        (bool success, ) = owner.call{value: address(this).balance}("");
-        require(success, "Withdraw failed");
-    }
-
-    receive() external payable {
-        totalAirdropAmount += msg.value;
-    }
-}
-```
-
-### 合约要点
-
-- `claim` 接收 `proof` 数组和 `amount`
-- 用 `keccak256(abi.encodePacked(address, amount))` 生成叶子
-- 使用 OpenZeppelin 的 `MerkleProof.verify` 验证
-- `hasClaimed` mapping 防止重复领取
+| 函数 | 权限 | 说明 |
+|---|---|---|
+| `claim(bytes32[] proof, uint256 amount)` | 任意用户 | 验证 Proof，成功后转账 MRKL |
+| `setMerkleRoot(bytes32 newRoot)` | owner | 更新空投名单 Root |
+| `syncAirdropAmount()` | 任意用户 | 将 `totalAirdropAmount` 同步为当前 ERC20 余额 |
+| `checkClaimed(address user)` | view | 查询领取状态 |
+| `withdrawTokens(address to)` | owner | 提取剩余 MRKL |
 
 ---
 
-## 4. 第二步：Merkle Tree 工具类
+## 5. Merkle 数据与 Root
 
-创建 `contracts/scripts/merkletree.cjs`（也可以放到前端共用）：
+基础白名单当前为 9 个地址，总额度 13,500 MRKL。权威数据文件：
 
-```javascript
-const { ethers } = require('ethers');
+- `contracts/scripts/merkletree.cjs`
+- `web/src/utils/merkletree.js`
 
-const airdropData = [
-  { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', amount: '1.0' },
-  { address: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', amount: '2.0' },
-  // 更多地址...
-];
-
-function hashLeaf(address, amount) {
-  return ethers.solidityPackedKeccak256(
-    ['address', 'uint256'],
-    [address, ethers.parseEther(amount)]
-  );
-}
-
-function hashPair(a, b) {
-  const [left, right] = BigInt(a) <= BigInt(b) ? [a, b] : [b, a];
-  const leftBytes = ethers.getBytes(left);
-  const rightBytes = ethers.getBytes(right);
-  const combined = new Uint8Array(leftBytes.length + rightBytes.length);
-  combined.set(leftBytes, 0);
-  combined.set(rightBytes, leftBytes.length);
-  return ethers.keccak256(combined);
-}
-
-function buildTree(leaves) {
-  let layers = [leaves];
-  while (layers[layers.length - 1].length > 1) {
-    const layer = layers[layers.length - 1];
-    const nextLayer = [];
-    for (let i = 0; i < layer.length; i += 2) {
-      if (i + 1 < layer.length) {
-        nextLayer.push(hashPair(layer[i], layer[i + 1]));
-      } else {
-        nextLayer.push(layer[i]);  // 奇数个节点，直接提升
-      }
-    }
-    layers.push(nextLayer);
-  }
-  return layers;
-}
-
-function getMerkleRoot() {
-  const leaves = airdropData.map(item => hashLeaf(item.address, item.amount));
-  const layers = buildTree(leaves);
-  return layers[layers.length - 1][0];
-}
-
-function getProof(address, amount) {
-  const leaves = airdropData.map(item => hashLeaf(item.address, item.amount));
-  const targetLeaf = hashLeaf(address, amount);
-  let index = leaves.findIndex(l => l === targetLeaf);
-  if (index === -1) return [];
-
-  const layers = buildTree(leaves);
-  const proof = [];
-  for (let i = 0; i < layers.length - 1; i++) {
-    const layer = layers[i];
-    const siblingIndex = index % 2 === 0 ? index + 1 : index - 1;
-    if (siblingIndex < layer.length) {
-      proof.push(layer[siblingIndex]);
-    }
-    index = Math.floor(index / 2);
-  }
-  return proof;
-}
-
-module.exports = { airdropData, getMerkleRoot, getProof, hashLeaf };
-```
-
-### 验证 Merkle Root
+计算 Root：
 
 ```bash
 cd contracts
 node -e "const { getMerkleRoot } = require('./scripts/merkletree.cjs'); console.log(getMerkleRoot());"
 ```
 
-输出：`0x544c58397ac6b5640c1f9a5e692d4df31709de5aaa78c8e82cd277a26d4ab7e2`
+当前输出：
 
-### 为什么要用 `solidityPackedKeccak256`
+```text
+0x9fb630f0f3bdeb2629b70ee780df4ff4f6c39a7ecb3b78a47322b61dd708e830
+```
 
-协议：
-- `solidityPackedKeccak256(['address', 'uint256'], [addr, amount])` 
-- 对应 Solidity 中 `keccak256(abi.encodePacked(address, amount))`
-- 这是确保前后端一致的关键
+当前额度：
+
+| 地址 | 额度 |
+|---|---:|
+| `0x70997970C51812dc3A010C7d01b50e0d17dc79C8` | 1,000 MRKL |
+| `0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC` | 2,000 MRKL |
+| `0x90F79bf6EB2c4f870365E785982E1f101E93b906` | 500 MRKL |
+| `0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65` | 3,000 MRKL |
+| `0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc` | 1,500 MRKL |
+| `0x976EA74026E726554dB657fA54763abd0C3a0aa9` | 2,500 MRKL |
+| `0x14dC79964da2C08b23698B3D3cc7Ca32193d9955` | 800 MRKL |
+| `0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f` | 1,200 MRKL |
+| `0x52e598665a4eC24D671F5EeE8dDA970166C859c8` | 1,000 MRKL |
 
 ---
 
-## 5. 第三步：Hardhat 配置与部署
+## 6. 本地部署与领取
 
-### 5.1 安装 Hardhat
+### 6.1 启动本地链
 
 ```bash
 cd contracts
-npm init -y
-npm install -D hardhat@"^2.28.0" "@nomicfoundation/hardhat-toolbox@hh2"
-npm install @openzeppelin/contracts
-```
-
-重要：`@hh2` tag 对应 Hardhat 2.x。当前的 `latest` 版本是 Hardhat 3，与 Hardhat 2 的脚本不兼容。
-
-### 5.2 Hardhat 配置
-
-`hardhat.config.js`：
-
-```javascript
-require('@nomicfoundation/hardhat-toolbox');
-
-module.exports = {
-  solidity: '0.8.20',
-  networks: {
-    hardhat: {
-      chainId: 1337,
-    },
-  },
-};
-```
-
-使用 CJS (`require`) ，不要加 `"type": "module"`。
-
-### 5.3 部署脚本
-
-`scripts/deploy.js`：
-
-```javascript
-const { ethers } = require('hardhat');
-
-async function main() {
-  const merkleRoot = '0x544c58397ac6b5640c1f9a5e692d4df31709de5aaa78c8e82cd277a26d4ab7e2';
-
-  const MerkelAirdrop = await ethers.getContractFactory('MerkelAirdrop');
-  const airdrop = await MerkelAirdrop.deploy(merkleRoot);
-  await airdrop.waitForDeployment();
-
-  console.log('Airdrop deployed to:', await airdrop.getAddress());
-}
-
-main().catch(console.error);
-```
-
-### 5.4 编译与部署
-
-```bash
-# 1. 编译
-npx hardhat compile
-# 输出：Compiled 3 Solidity files successfully
-
-# 2. 启动本地节点（保持运行）
 npx hardhat node
+```
 
-# 3. 在另一个终端部署
+### 6.2 部署 Token 与 Airdrop
+
+另开终端：
+
+```bash
+cd contracts
 npx hardhat run scripts/deploy.js --network localhost
-# 输出：Airdrop deployed to: 0x5FbDB2315678afecb367f032d93F642f64180aa3
 ```
 
-### 5.5 给合约充值
+脚本会输出类似：
 
-```bash
-npx hardhat console --network localhost
+```text
+AIRDROP_TOKEN_ADDRESS=<token-address>
+AIRDROP_CONTRACT_ADDRESS=<airdrop-address>
+VITE_AIRDROP_CONTRACT_ADDRESS=<airdrop-address>
+VITE_AIRDROP_TOKEN_ADDRESS=<token-address>
 ```
 
-```javascript
-const [owner] = await ethers.getSigners();
-await owner.sendTransaction({
-  to: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
-  value: ethers.parseEther('10')
-});
-// 确认余额
-console.log(await ethers.provider.getBalance('0x5FbDB2315678afecb367f032d93F642f64180aa3'));
-```
-
-如果不充值，领取会报 `Insufficient funds`。
-
----
-
-## 6. 第四步：React + Vite 前端
-
-### 6.1 创建项目
+### 6.3 配置前端连接本地链
 
 ```bash
 cd web
-npm create vite@latest . -- --template react
-cd web
-npm install
-npm install ethers merkletreejs
+VITE_AIRDROP_CHAIN_ID=1337 VITE_AIRDROP_CONTRACT_ADDRESS=<airdrop-address> VITE_AIRDROP_TOKEN_ADDRESS=<token-address> npm run dev
 ```
 
-### 6.2 Vite 配置
+MetaMask 网络：
 
-`vite.config.js` 需要 polyfill Node.js 模块，因为 Ethers.js v6 依赖 buffer/util。
-
-```bash
-npm install -D vite-plugin-node-polyfills
-```
-
-```javascript
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import { nodePolyfills } from 'vite-plugin-node-polyfills';
-
-export default defineConfig({
-  plugins: [
-    react(),
-    nodePolyfills({ include: ['buffer', 'util', 'events'] })
-  ],
-});
-```
-
-### 6.3 前端 Merkle Tree
-
-`src/utils/merkletree.js` 和 `contracts/scripts/merkletree.cjs` 的逻辑完全一致，只是使用 ESM `import/export`：
-
-```javascript
-import { ethers } from 'ethers';
-
-const airdropData = [
-  // ... 同合约端的地址列表
-];
-
-// hashLeaf, hashPair, buildTree, getProof, getMerkleRoot 与第四步完全相同
-
-export { airdropData, getMerkleRoot, getProof, verifyProof };
-```
-
-### 6.4 ABI 文件
-
-从 `artifacts/contracts/MerkelAirdrop.sol/MerkelAirdrop.json` 中拷贝 `abi` 数组到 `src/abi/MerkelAirdrop.json`。
-
-### 6.5 主页面 App.jsx
-
-核心逻辑：
-
-```javascript
-import { useState } from 'react';
-import { ethers } from 'ethers';
-import { getMerkleRoot, getProof, airdropData } from './utils/merkletree';
-import ABI from './abi/MerkelAirdrop.json';
-
-const CONTRACT_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
-
-function App() {
-  const [account, setAccount] = useState(null);
-  const [contract, setContract] = useState(null);
-  const [selectedUser, setSelectedUser] = useState(null);
-  const [claimStatus, setClaimStatus] = useState('');
-
-  const connectWallet = async () => {
-    const provider = new ethers.BrowserProvider(window.ethereum);
-    const accounts = await provider.send('eth_requestAccounts', []);
-    const signer = await provider.getSigner();
-    const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
-    setAccount(await signer.getAddress());
-    setContract(contract);
-  };
-
-  const claimAirdrop = async () => {
-    if (!contract || !account) return;
-    const proof = getProof(account, selectedUser.amount);
-    if (proof.length === 0) {
-      setClaimStatus('该地址不在空投列表中');
-      return;
-    }
-    const amountWei = ethers.parseEther(selectedUser.amount);
-    const tx = await contract.claim(proof, amountWei);
-    await tx.wait();
-    setClaimStatus('领取成功！');
-  };
-
-  // UI 渲染...
-}
-```
-
-### 6.6 运行前端
-
-```bash
-npm run dev     # 开发模式
-npm run build   # 生产构建，输出到 dist/
-```
-
----
-
-## 7. 第五步：链上互动
-
-### 7.1 MetaMask 配置
-
-添加本地网络：
-- Network Name: `Hardhat Local`
-- RPC URL: `http://127.0.0.1:8545`
-- Chain ID: `1337`
-- Currency Symbol: `ETH`
-
-### 7.2 导入 Hardhat 测试账户
-
-Hardhat 自带 20 个已充值的测试账户。这些账户的私钥对应空投列表中的地址：
-
-| 地址 | 私钥 |
-|------|------|
-| 0x7099... | 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d |
-| 0x3C44... | 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a |
-
-导入方法：MetaMask → 账户详情 → 导入账户 → 粘贴私钥
-
-### 7.3 交互流程
-
-1. 打开前端 `http://localhost:5173`
-2. 选择空投列表中的一个地址
-3. 点击模拟领取 —— 验证 Proof 生成
-4. 连接 MetaMask 到 Hardhat 本地网络
-5. 点击连接钱包领取 —— 真实链上交互
-
----
-
-## 8. 第六步：添加新空投地址
-
-### 8.1 修改前端和合约端的地址列表
-
-编辑 `web/src/utils/merkletree.js` 和 `contracts/scripts/merkletree.cjs`，在 `airdropData` 数组中添加新对象：
-
-```javascript
-{ address: '0xYourNewAddressHere', amount: '1.0' }
-```
-
-### 8.2 重新计算 Root
-
-```bash
-cd web
-node -e "
-const { getMerkleRoot } = require('./src/utils/merkletree.js');
-console.log(getMerkleRoot());
-"
-```
-
-输出新的 Root，更新到 `contracts/scripts/deploy.js`。
-
-### 8.3 更新链上合约
-
-方法 A：重新部署
-```bash
-npx hardhat run scripts/deploy.js --network localhost
-# 更新前端 App.jsx 中的 CONTRACT_ADDRESS
-```
-
-方法 B：用 owner 调用 setMerkleRoot
-```bash
-npx hardhat console --network localhost
-```
-```javascript
-const contract = await ethers.getContractAt("MerkelAirdrop", "0x5FbDB...");
-await contract.setMerkleRoot("0x新的Root...");
-```
-
-**关键要求：**前端的 `airdropData` 、部署脚本的 `merkleRoot` 、链上合约的 `merkleRoot` 三者必须严格一致，否则 claim 会失败。
-
----
-
-## 9. 常见问题
-
-### Q1: "该地址不在空投列表中"
-
-原因：你的 MetaMask 地址不在 `airdropData` 中，或者链上 `merkleRoot` 与前端计算的不一致。
-
-解决：确认三处一致：前端 `airdropData` → `deploy.js` 的 `merkleRoot` → 链上合约 `merkleRoot`。
-
-### Q2: "Insufficient funds"
-
-原因：合约没有 ETH。
-
-解决：调用 `fundAirdrop()` 或直接发送 ETH 到合约地址。
-
-### Q3: "Invalid proof"
-
-原因：居然能看到这个错误，说明 `proof.length > 0` 但验证不通过。几乎肯定是 Root 不一致。
-
-解决：使用 `npx hardhat console` 检查 `await contract.merkleRoot()` 与前端 `getMerkleRoot()` 的值是否相同。
-
-### Q4: Hardhat ESM 错误
-
-```
-Hardhat only supports ESM projects.
-```
-
-解决：确保不要在 `contracts/package.json` 中设置 `"type": "module"`，且 `hardhat.config.js` 使用 `require`/`module.exports`。
-
-### Q5: Ethers.js v6 与 v5 差异
-
-| v5 | v6 |
+| 字段 | 值 |
 |---|---|
-| `ethers.providers.Web3Provider` | `ethers.BrowserProvider` |
-| `ethers.utils.parseEther` | `ethers.parseEther` |
-| `await contract.deployed()` | `await contract.waitForDeployment()` |
-| `contract.address` | `await contract.getAddress()` |
-| `ethers.utils.keccak256` | `ethers.keccak256` |
+| Network Name | `Hardhat Local` |
+| RPC URL | `http://127.0.0.1:8545` |
+| Chain ID | `1337` |
+| Currency Symbol | `ETH` |
 
-本项目使用 v6，注意语法区别。
+领取流程：
+
+1. 打开 `http://localhost:5173`。
+2. 连接钱包。
+3. 如果钱包不在基础白名单，可使用 Hardhat 本地账户，或只做“模拟验证”。
+4. 选择白名单地址，查看 Proof 路径。
+5. 点击“执行链上领取”。
 
 ---
 
-## 相关资料
+## 7. 前端开发
 
-- [OpenZeppelin MerkleProof 文档](https://docs.openzeppelin.com/contracts/4.x/api/utils#MerkleProof)
-- [Ethers.js v6 迁移指南](https://docs.ethers.org/v6/migrating/)
-- [Hardhat 文档](https://hardhat.org/docs)
+前端入口：`web/src/App.jsx`。
+
+当前页面能力：
+
+- `#claim`：领取门户。
+- `#guide`：内嵌 Markdown 开发指南。
+- 中英文切换，语言偏好保存到 `localStorage`。
+- 自动请求切换到 `VITE_AIRDROP_CHAIN_ID` 对应网络。
+- 读取钱包 ETH 余额、MRKL 余额、空投合约 MRKL 储备、领取状态。
+- 合约不可用时进入演示模式，不阻断 Proof 学习与 UI 演示。
+- “加入空投”会把当前钱包写入 `localStorage` 的演示白名单，只影响浏览器本地状态。
+
+前端环境变量：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `VITE_AIRDROP_CONTRACT_ADDRESS` | `0xC4c8D8ce56cDFC9b592F01A300Bdc19b6463563A` | Sepolia 空投合约地址 |
+| `VITE_AIRDROP_TOKEN_ADDRESS` | `0xd6dB4Efd0Aea1763eD421D4Fa94C123B4E21D8BC` | Sepolia MRKL Token 地址 |
+| `VITE_AIRDROP_CHAIN_ID` | `11155111` | 默认 Sepolia |
+
+常用命令：
+
+```bash
+cd web
+npm run dev
+npm run lint
+npm run build
+npm run preview
+```
+
+---
+
+## 8. Sepolia 与 Vercel 部署
+
+### 8.1 Sepolia 合约部署
+
+Hardhat 配置支持 `sepolia` 网络，使用以下环境变量：
+
+| 变量 | 说明 |
+|---|---|
+| `SEPOLIA_RPC_URL` 或 `SEPOLIA_RPC` | Sepolia RPC URL |
+| `PRIVATE_KEY` | 部署账户私钥；只放本地/CI secrets，不提交 |
+| `ETHERSCAN_API_KEY` | 可选，合约验证 API key |
+
+部署：
+
+```bash
+cd contracts
+SEPOLIA_RPC_URL=<rpc-url> PRIVATE_KEY=<private-key> npx hardhat run scripts/deploy.js --network sepolia
+```
+
+### 8.2 同步前端环境变量
+
+把部署脚本输出同步到 Vercel：
+
+```text
+VITE_AIRDROP_CHAIN_ID=11155111
+VITE_AIRDROP_CONTRACT_ADDRESS=<AIRDROP_CONTRACT_ADDRESS>
+VITE_AIRDROP_TOKEN_ADDRESS=<AIRDROP_TOKEN_ADDRESS>
+```
+
+当前代码内置默认值：
+
+```text
+VITE_AIRDROP_CONTRACT_ADDRESS=0xC4c8D8ce56cDFC9b592F01A300Bdc19b6463563A
+VITE_AIRDROP_TOKEN_ADDRESS=0xd6dB4Efd0Aea1763eD421D4Fa94C123B4E21D8BC
+VITE_AIRDROP_CHAIN_ID=11155111
+```
+
+### 8.3 Vercel 构建
+
+根目录 `package.json`：
+
+```bash
+npm run build
+```
+
+该命令会：
+
+1. 进入 `web`。
+2. 安装前端依赖。
+3. 执行 `npm run build`。
+4. 将 `web/dist` 移动到根目录 `dist`。
+
+`vercel.json` 已配置 SPA fallback：所有路径重写到 `/index.html`。
+
+---
+
+## 9. 更新白名单
+
+### 9.1 更新基础数据
+
+同时编辑：
+
+- `contracts/scripts/merkletree.cjs`
+- `web/src/utils/merkletree.js`
+
+新增格式：
+
+```javascript
+{ address: '0xYourAddress', amount: '1000' }
+```
+
+### 9.2 重新计算 Root
+
+```bash
+cd contracts
+node -e "const { getMerkleRoot } = require('./scripts/merkletree.cjs'); console.log(getMerkleRoot());"
+```
+
+### 9.3 更新链上状态
+
+两种方式：
+
+1. 重新部署 Token + Airdrop。
+2. 使用 owner 调用 `setMerkleRoot(newRoot)`，并确保空投合约有足够 MRKL 储备。
+
+如果只是前端“加入空投”，它只修改本地浏览器状态，不会更新链上 Root，不能产生真实领取资格。
+
+---
+
+## 10. 测试与验证
+
+合约测试：
+
+```bash
+cd contracts
+npm test
+```
+
+前端 lint：
+
+```bash
+cd web
+npm run lint
+```
+
+前端构建：
+
+```bash
+cd web
+npm run build
+```
+
+根部署构建：
+
+```bash
+npm run build
+```
+
+文档同步后建议同时检查：
+
+```bash
+git diff --check -- README.md GUIDE.md GUIDE.en.md PRODUCT.md web/src/content/GUIDE.md web/src/content/GUIDE.en.md
+```
+
+---
+
+## 11. 常见问题
+
+### Q1：为什么真实领取按钮显示“合约未就绪”？
+
+钱包当前网络没有在 `VITE_AIRDROP_CONTRACT_ADDRESS` 检测到合约。切换到 `VITE_AIRDROP_CHAIN_ID` 对应网络，或重新部署合约并同步 Vite 环境变量。
+
+### Q2：为什么提示不在空投列表？
+
+真实领取使用当前连接钱包地址生成 Proof。该地址必须存在于基础白名单，并且链上 Root 必须匹配当前白名单。
+
+### Q3：为什么演示加入后可以模拟，但不能链上领取？
+
+演示加入只写入浏览器 `localStorage`，不会调用 owner 更新链上 `merkleRoot`。真实领取必须更新链上 Root。
+
+### Q4：为什么不再需要给合约转 ETH？
+
+当前版本领取的是 ERC20 MRKL，不是 ETH。部署脚本会 mint 总空投额度到 `MerkelAirdrop` 合约。合约 ETH 只用于 gas 由调用者钱包支付，不是空投资产。
+
+### Q5：`Invalid proof` 怎么排查？
+
+按顺序检查：
+
+1. `contracts/scripts/merkletree.cjs` 与 `web/src/utils/merkletree.js` 是否同一份基础数据。
+2. `getMerkleRoot()` 输出是否等于链上 `merkleRoot()`。
+3. 钱包地址与 amount 是否与白名单记录完全一致。
+4. 前端 `VITE_AIRDROP_CONTRACT_ADDRESS` 是否指向正确网络上的合约。

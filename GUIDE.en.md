@@ -1,555 +1,401 @@
-# Merkel Airdrop Developer Guide
+# Merkel Airdrop Development and Deployment Guide
 
-Build an Ethereum airdrop system based on a Merkle Tree from scratch.
+This guide reflects the current project after the large refactor. Merkel Airdrop is now an ERC20 MRKL token airdrop system with Solidity contracts, Hardhat tests/deployment scripts, a React + Vite claim portal, default Sepolia configuration, and an embedded bilingual guide page in the frontend.
 
 ## Table of contents
 
-1. [Project overview](#1-project-overview)
-2. [Environment setup](#2-environment-setup)
-3. [Step 1: Write the Solidity smart contract](#3-step-1-write-the-solidity-smart-contract)
-4. [Step 2: Merkle Tree utilities](#4-step-2-merkle-tree-utilities)
-5. [Step 3: Hardhat configuration and deployment](#5-step-3-hardhat-configuration-and-deployment)
-6. [Step 4: React + Vite frontend](#6-step-4-react--vite-frontend)
-7. [Step 5: On-chain interaction](#7-step-5-on-chain-interaction)
-8. [Step 6: Add a new airdrop address](#8-step-6-add-a-new-airdrop-address)
-9. [FAQ](#9-faq)
+1. [Project modules](#1-project-modules)
+2. [End-to-end architecture](#2-end-to-end-architecture)
+3. [Prerequisites](#3-prerequisites)
+4. [Smart contracts](#4-smart-contracts)
+5. [Merkle data and root](#5-merkle-data-and-root)
+6. [Local deployment and claiming](#6-local-deployment-and-claiming)
+7. [Frontend development](#7-frontend-development)
+8. [Sepolia and Vercel deployment](#8-sepolia-and-vercel-deployment)
+9. [Updating the allowlist](#9-updating-the-allowlist)
+10. [Testing and verification](#10-testing-and-verification)
+11. [FAQ](#11-faq)
 
 ---
 
-## 1. Project overview
+## 1. Project modules
 
-### What is a Merkle Tree airdrop?
+| Module | Path | Purpose |
+|---|---|---|
+| ERC20 token | `contracts/contracts/AirdropToken.sol` | OpenZeppelin ERC20 named `Merkel Airdrop Token`, symbol `MRKL`, owner can mint |
+| Airdrop contract | `contracts/contracts/MerkelAirdrop.sol` | Stores ERC20 token address and Merkle Root, verifies proofs, transfers MRKL |
+| Merkle utility | `contracts/scripts/merkletree.cjs` | CommonJS utility used by Hardhat deployment scripts |
+| Frontend Merkle utility | `web/src/utils/merkletree.js` | ESM utility for React proof generation and demo allowlist merging |
+| Deployment script | `contracts/scripts/deploy.js` | Deploys Token, deploys Airdrop, mints total allocation to the airdrop contract, prints Vite env vars |
+| Contract tests | `contracts/test/MerkelAirdropERC20.test.js` | Covers token address, claims, duplicate/invalid proofs, owner withdrawal |
+| Claim portal | `web/src/App.jsx` | Wallet connection, network switching, on-chain state reads, claiming, simulation, guide rendering |
+| Frontend docs | `web/src/content/GUIDE.md` / `GUIDE.en.md` | Rendered inside the `/#guide` route |
 
-The traditional airdrop problem: if an allowlist has 10,000 addresses, storing every address on-chain is expensive, and querying the full list is also inefficient.
+---
 
-Merkle Tree solution:
-- Store only a 32-byte **Merkle Root** on-chain
-- A user submits their own **Proof** when claiming, which contains the sibling nodes along the path
-- The contract hashes each layer and verifies that the user belongs to the allowlist
-
-Gas cost drops from O(n) to O(log n). With 10,000 users, only about 14 nodes are needed for verification.
-
-### Core flow
+## 2. End-to-end architecture
 
 ```text
-User address + amount  →  hash into a leaf
-Pair and merge leaves  →  first layer of nodes
-Keep merging layers    →  final root
-→ store the root in the on-chain contract
+Allowlisted address + MRKL allocation
+        │
+        ▼
+contracts/scripts/merkletree.cjs and web/src/utils/merkletree.js
+leaf = keccak256(abi.encodePacked(address, amount))
+        │
+        ▼
+Merkle Root = 0x9fb630f0f3bdeb2629b70ee780df4ff4f6c39a7ecb3b78a47322b61dd708e830
+        │
+        ├─ Deployment script writes it into MerkelAirdrop(tokenAddress, root)
+        │
+        └─ Frontend generates a proof for the selected account
+                 │
+                 ▼
+User connects wallet → switches target network → contract.claim(proof, amountWei)
+                 │
+                 ▼
+Contract verifies proof, checks hasClaimed, transfers MRKL, records claim state
 ```
+
+Important invariants:
+
+- Contract `merkleRoot` must equal the root generated from the current base allowlist.
+- Frontend base allowlist must match the deployment-script allowlist.
+- `amount` is stored as a human-readable MRKL string and converted with `ethers.parseEther(amount)` before hashing/calling.
+- Frontend demo entries are only for local simulation; they do not create on-chain eligibility.
 
 ---
 
-## 2. Environment setup
+## 3. Prerequisites
 
 Required:
+
 - Node.js >= 18
-- MetaMask browser extension
-- Git (optional)
+- npm
+- MetaMask or compatible EVM wallet
+- Git
+
+Install dependencies:
 
 ```bash
-node -v   # confirm >= 18
+npm install --prefix contracts
+npm install --prefix web
+```
+
+Confirm versions:
+
+```bash
+node -v
 npm -v
 ```
 
 ---
 
-## 3. Step 1: Write the Solidity smart contract
+## 4. Smart contracts
 
-Create the directory structure:
+### 4.1 `AirdropToken.sol`
 
-```bash
-mkdir -p merkel-airdorp/contracts/contracts
-mkdir -p merkel-airdorp/web/src
-```
+`AirdropToken` extends OpenZeppelin `ERC20` and `Ownable`:
 
-### 3.1 Airdrop contract code
+- Name: `Merkel Airdrop Token`
+- Symbol: `MRKL`
+- `mint(address to, uint256 amount)` is owner-only
 
-`contracts/contracts/MerkelAirdrop.sol`:
+### 4.2 `MerkelAirdrop.sol`
 
-```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+Core state:
 
-import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+| State | Purpose |
+|---|---|
+| `IERC20 public immutable airdropToken` | Airdropped ERC20 token address |
+| `bytes32 public merkleRoot` | Current allowlist commitment |
+| `address public owner` | Operator owner |
+| `uint256 public totalAirdropAmount` | Recorded token reserve |
+| `mapping(address => bool) public hasClaimed` | Replay protection |
 
-contract MerkelAirdrop {
-    bytes32 public merkleRoot;
-    address public owner;
-    uint256 public totalAirdropAmount;
+Core functions:
 
-    mapping(address => bool) public hasClaimed;
-
-    event MerkleRootUpdated(bytes32 newRoot);
-    event AirdropClaimed(address indexed user, uint256 amount);
-
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Not owner");
-        _;
-    }
-
-    constructor(bytes32 _merkleRoot) {
-        owner = msg.sender;
-        merkleRoot = _merkleRoot;
-    }
-
-    function setMerkleRoot(bytes32 _newRoot) external onlyOwner {
-        merkleRoot = _newRoot;
-        emit MerkleRootUpdated(_newRoot);
-    }
-
-    function fundAirdrop() external payable onlyOwner {
-        totalAirdropAmount += msg.value;
-    }
-
-    function claim(bytes32[] calldata proof, uint256 amount) external {
-        require(!hasClaimed[msg.sender], "Already claimed");
-        require(address(this).balance >= amount, "Insufficient funds");
-
-        bytes32 leaf = keccak256(abi.encodePacked(msg.sender, amount));
-        require(MerkleProof.verify(proof, merkleRoot, leaf), "Invalid proof");
-
-        hasClaimed[msg.sender] = true;
-        (bool success, ) = msg.sender.call{value: amount}("");
-        require(success, "Transfer failed");
-
-        emit AirdropClaimed(msg.sender, amount);
-    }
-
-    function checkClaimed(address user) external view returns (bool) {
-        return hasClaimed[user];
-    }
-
-    function withdraw() external onlyOwner {
-        (bool success, ) = owner.call{value: address(this).balance}("");
-        require(success, "Withdraw failed");
-    }
-
-    receive() external payable {
-        totalAirdropAmount += msg.value;
-    }
-}
-```
-
-### Contract highlights
-
-- `claim` receives a `proof` array and an `amount`
-- The leaf is generated with `keccak256(abi.encodePacked(address, amount))`
-- OpenZeppelin `MerkleProof.verify` validates the proof
-- The `hasClaimed` mapping prevents repeated claims
+| Function | Permission | Purpose |
+|---|---|---|
+| `claim(bytes32[] proof, uint256 amount)` | Any user | Verifies proof and transfers MRKL |
+| `setMerkleRoot(bytes32 newRoot)` | owner | Updates the allowlist root |
+| `syncAirdropAmount()` | Any user | Syncs `totalAirdropAmount` to current ERC20 balance |
+| `checkClaimed(address user)` | view | Reads claim state |
+| `withdrawTokens(address to)` | owner | Withdraws remaining MRKL |
 
 ---
 
-## 4. Step 2: Merkle Tree utilities
+## 5. Merkle data and root
 
-Create `contracts/scripts/merkletree.cjs`. You can also share the same logic with the frontend.
+The base allowlist currently has 9 addresses and a total allocation of 13,500 MRKL. Authoritative data files:
 
-```javascript
-const { ethers } = require('ethers');
+- `contracts/scripts/merkletree.cjs`
+- `web/src/utils/merkletree.js`
 
-const airdropData = [
-  { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', amount: '1.0' },
-  { address: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', amount: '2.0' },
-  // more addresses...
-];
-
-function hashLeaf(address, amount) {
-  return ethers.solidityPackedKeccak256(
-    ['address', 'uint256'],
-    [address, ethers.parseEther(amount)]
-  );
-}
-
-function hashPair(a, b) {
-  const [left, right] = BigInt(a) <= BigInt(b) ? [a, b] : [b, a];
-  const leftBytes = ethers.getBytes(left);
-  const rightBytes = ethers.getBytes(right);
-  const combined = new Uint8Array(leftBytes.length + rightBytes.length);
-  combined.set(leftBytes, 0);
-  combined.set(rightBytes, leftBytes.length);
-  return ethers.keccak256(combined);
-}
-
-function buildTree(leaves) {
-  let layers = [leaves];
-  while (layers[layers.length - 1].length > 1) {
-    const layer = layers[layers.length - 1];
-    const nextLayer = [];
-    for (let i = 0; i < layer.length; i += 2) {
-      if (i + 1 < layer.length) {
-        nextLayer.push(hashPair(layer[i], layer[i + 1]));
-      } else {
-        nextLayer.push(layer[i]);
-      }
-    }
-    layers.push(nextLayer);
-  }
-  return layers;
-}
-
-function getMerkleRoot() {
-  const leaves = airdropData.map(item => hashLeaf(item.address, item.amount));
-  const layers = buildTree(leaves);
-  return layers[layers.length - 1][0];
-}
-
-function getProof(address, amount) {
-  const leaves = airdropData.map(item => hashLeaf(item.address, item.amount));
-  const targetLeaf = hashLeaf(address, amount);
-  let index = leaves.findIndex(l => l === targetLeaf);
-  if (index === -1) return [];
-
-  const layers = buildTree(leaves);
-  const proof = [];
-  for (let i = 0; i < layers.length - 1; i++) {
-    const layer = layers[i];
-    const siblingIndex = index % 2 === 0 ? index + 1 : index - 1;
-    if (siblingIndex < layer.length) {
-      proof.push(layer[siblingIndex]);
-    }
-    index = Math.floor(index / 2);
-  }
-  return proof;
-}
-
-module.exports = { airdropData, getMerkleRoot, getProof, hashLeaf };
-```
-
-### Verify the Merkle Root
+Compute the root:
 
 ```bash
 cd contracts
 node -e "const { getMerkleRoot } = require('./scripts/merkletree.cjs'); console.log(getMerkleRoot());"
 ```
 
-Expected output:
+Current output:
 
 ```text
-0x544c58397ac6b5640c1f9a5e692d4df31709de5aaa78c8e82cd277a26d4ab7e2
+0x9fb630f0f3bdeb2629b70ee780df4ff4f6c39a7ecb3b78a47322b61dd708e830
 ```
 
-### Why `solidityPackedKeccak256` matters
+Current allocations:
 
-Protocol:
-- `solidityPackedKeccak256(['address', 'uint256'], [addr, amount])`
-- Matches Solidity `keccak256(abi.encodePacked(address, amount))`
-- This is the key to keeping frontend and contract hashing consistent
+| Address | Allocation |
+|---|---:|
+| `0x70997970C51812dc3A010C7d01b50e0d17dc79C8` | 1,000 MRKL |
+| `0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC` | 2,000 MRKL |
+| `0x90F79bf6EB2c4f870365E785982E1f101E93b906` | 500 MRKL |
+| `0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65` | 3,000 MRKL |
+| `0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc` | 1,500 MRKL |
+| `0x976EA74026E726554dB657fA54763abd0C3a0aa9` | 2,500 MRKL |
+| `0x14dC79964da2C08b23698B3D3cc7Ca32193d9955` | 800 MRKL |
+| `0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f` | 1,200 MRKL |
+| `0x52e598665a4eC24D671F5EeE8dDA970166C859c8` | 1,000 MRKL |
 
 ---
 
-## 5. Step 3: Hardhat configuration and deployment
+## 6. Local deployment and claiming
 
-### 5.1 Install Hardhat
+### 6.1 Start a local chain
 
 ```bash
 cd contracts
-npm init -y
-npm install -D hardhat@"^2.28.0" "@nomicfoundation/hardhat-toolbox@hh2"
-npm install @openzeppelin/contracts
-```
-
-Important: the `@hh2` tag is for Hardhat 2.x. The current `latest` version is Hardhat 3, which is incompatible with these Hardhat 2 scripts.
-
-### 5.2 Hardhat configuration
-
-`hardhat.config.js`:
-
-```javascript
-require('@nomicfoundation/hardhat-toolbox');
-
-module.exports = {
-  solidity: '0.8.20',
-  networks: {
-    hardhat: {
-      chainId: 1337,
-    },
-  },
-};
-```
-
-Use CommonJS (`require`) and do not add `"type": "module"`.
-
-### 5.3 Deployment script
-
-`scripts/deploy.js`:
-
-```javascript
-const { ethers } = require('hardhat');
-
-async function main() {
-  const merkleRoot = '0x544c58397ac6b5640c1f9a5e692d4df31709de5aaa78c8e82cd277a26d4ab7e2';
-
-  const MerkelAirdrop = await ethers.getContractFactory('MerkelAirdrop');
-  const airdrop = await MerkelAirdrop.deploy(merkleRoot);
-  await airdrop.waitForDeployment();
-
-  console.log('Airdrop deployed to:', await airdrop.getAddress());
-}
-
-main().catch(console.error);
-```
-
-### 5.4 Compile and deploy
-
-```bash
-# 1. Compile
-npx hardhat compile
-# Output: Compiled 3 Solidity files successfully
-
-# 2. Start a local node and keep it running
 npx hardhat node
+```
 
-# 3. Deploy from another terminal
+### 6.2 Deploy Token and Airdrop
+
+In another terminal:
+
+```bash
+cd contracts
 npx hardhat run scripts/deploy.js --network localhost
-# Output: Airdrop deployed to: 0x5FbDB2315678afecb367f032d93F642f64180aa3
 ```
 
-### 5.5 Fund the contract
-
-```bash
-npx hardhat console --network localhost
-```
-
-```javascript
-const [owner] = await ethers.getSigners();
-await owner.sendTransaction({
-  to: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
-  value: ethers.parseEther('10')
-});
-console.log(await ethers.provider.getBalance('0x5FbDB2315678afecb367f032d93F642f64180aa3'));
-```
-
-If the contract is not funded, claiming fails with `Insufficient funds`.
-
----
-
-## 6. Step 4: React + Vite frontend
-
-### 6.1 Create the project
-
-```bash
-cd web
-npm create vite@latest . -- --template react
-cd web
-npm install
-npm install ethers merkletreejs
-```
-
-### 6.2 Vite configuration
-
-`vite.config.js` needs Node.js polyfills because Ethers.js v6 depends on modules such as `buffer` and `util`.
-
-```bash
-npm install -D vite-plugin-node-polyfills
-```
-
-```javascript
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import { nodePolyfills } from 'vite-plugin-node-polyfills';
-
-export default defineConfig({
-  plugins: [
-    react(),
-    nodePolyfills({ include: ['buffer', 'util', 'events'] })
-  ],
-});
-```
-
-### 6.3 Frontend Merkle Tree
-
-`src/utils/merkletree.js` and `contracts/scripts/merkletree.cjs` use the same logic. The frontend version uses ESM `import/export`.
-
-```javascript
-import { ethers } from 'ethers';
-
-const airdropData = [
-  // same address list as the contract-side script
-];
-
-// hashLeaf, hashPair, buildTree, getProof, and getMerkleRoot are the same as above
-
-export { airdropData, getMerkleRoot, getProof, verifyProof };
-```
-
-### 6.4 ABI file
-
-Copy the `abi` array from `artifacts/contracts/MerkelAirdrop.sol/MerkelAirdrop.json` into `src/abi/MerkelAirdrop.json`.
-
-### 6.5 Main App.jsx flow
-
-Core logic:
-
-```javascript
-import { useState } from 'react';
-import { ethers } from 'ethers';
-import { getMerkleRoot, getProof, airdropData } from './utils/merkletree';
-import ABI from './abi/MerkelAirdrop.json';
-
-const CONTRACT_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
-
-function App() {
-  const [account, setAccount] = useState(null);
-  const [contract, setContract] = useState(null);
-  const [selectedUser, setSelectedUser] = useState(null);
-  const [claimStatus, setClaimStatus] = useState('');
-
-  const connectWallet = async () => {
-    const provider = new ethers.BrowserProvider(window.ethereum);
-    const accounts = await provider.send('eth_requestAccounts', []);
-    const signer = await provider.getSigner();
-    const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
-    setAccount(await signer.getAddress());
-    setContract(contract);
-  };
-
-  const claimAirdrop = async () => {
-    if (!contract || !account) return;
-    const proof = getProof(account, selectedUser.amount);
-    if (proof.length === 0) {
-      setClaimStatus('This address is not in the airdrop list.');
-      return;
-    }
-    const amountWei = ethers.parseEther(selectedUser.amount);
-    const tx = await contract.claim(proof, amountWei);
-    await tx.wait();
-    setClaimStatus('Claim succeeded!');
-  };
-
-  // render UI...
-}
-```
-
-### 6.6 Run the frontend
-
-```bash
-npm run dev     # development mode
-npm run build   # production build, output to dist/
-```
-
----
-
-## 7. Step 5: On-chain interaction
-
-### 7.1 MetaMask network configuration
-
-Add the local network:
-- Network Name: `Hardhat Local`
-- RPC URL: `http://127.0.0.1:8545`
-- Chain ID: `1337`
-- Currency Symbol: `ETH`
-
-### 7.2 Import Hardhat test accounts
-
-Hardhat provides 20 funded test accounts. These private keys correspond to addresses in the airdrop list.
-
-| Address | Private key |
-|---|---|
-| 0x7099... | 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d |
-| 0x3C44... | 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a |
-
-Import path: MetaMask → Account details → Import account → paste the private key.
-
-### 7.3 Interaction flow
-
-1. Open `http://localhost:5173`
-2. Select one address from the airdrop list
-3. Click simulated claim to verify proof generation
-4. Connect MetaMask to the Hardhat local network
-5. Click the wallet claim button for the real on-chain interaction
-
----
-
-## 8. Step 6: Add a new airdrop address
-
-### 8.1 Update address lists on both frontend and contract side
-
-Edit `web/src/utils/merkletree.js` and `contracts/scripts/merkletree.cjs`, then add a new object to the `airdropData` array:
-
-```javascript
-{ address: '0xYourNewAddressHere', amount: '1.0' }
-```
-
-### 8.2 Recompute the Root
-
-```bash
-cd web
-node -e "
-const { getMerkleRoot } = require('./src/utils/merkletree.js');
-console.log(getMerkleRoot());
-"
-```
-
-Use the new Root to update `contracts/scripts/deploy.js`.
-
-### 8.3 Update the on-chain contract
-
-Method A: redeploy
-
-```bash
-npx hardhat run scripts/deploy.js --network localhost
-# update CONTRACT_ADDRESS in App.jsx
-```
-
-Method B: call `setMerkleRoot` as the owner
-
-```bash
-npx hardhat console --network localhost
-```
-
-```javascript
-const contract = await ethers.getContractAt("MerkelAirdrop", "0x5FbDB...");
-await contract.setMerkleRoot("0xNewRoot...");
-```
-
-**Key requirement:** the frontend `airdropData`, deployment-script `merkleRoot`, and on-chain contract `merkleRoot` must be strictly consistent. Otherwise `claim` fails.
-
----
-
-## 9. FAQ
-
-### Q1: "This address is not in the airdrop list"
-
-Cause: your MetaMask address is not in `airdropData`, or the on-chain `merkleRoot` does not match the frontend calculation.
-
-Fix: confirm these three values are aligned: frontend `airdropData` → `deploy.js` `merkleRoot` → on-chain contract `merkleRoot`.
-
-### Q2: "Insufficient funds"
-
-Cause: the contract has no ETH.
-
-Fix: call `fundAirdrop()` or send ETH directly to the contract address.
-
-### Q3: "Invalid proof"
-
-Cause: if `proof.length > 0` but verification still fails, the Root is almost certainly inconsistent.
-
-Fix: use `npx hardhat console` and compare `await contract.merkleRoot()` with frontend `getMerkleRoot()`.
-
-### Q4: Hardhat ESM error
+The script prints values like:
 
 ```text
-Hardhat only supports ESM projects.
+AIRDROP_TOKEN_ADDRESS=<token-address>
+AIRDROP_CONTRACT_ADDRESS=<airdrop-address>
+VITE_AIRDROP_CONTRACT_ADDRESS=<airdrop-address>
+VITE_AIRDROP_TOKEN_ADDRESS=<token-address>
 ```
 
-Fix: make sure `contracts/package.json` does not set `"type": "module"`, and make sure `hardhat.config.js` uses `require` / `module.exports`.
+### 6.3 Point the frontend to the local chain
 
-### Q5: Ethers.js v6 vs v5 differences
+```bash
+cd web
+VITE_AIRDROP_CHAIN_ID=1337 VITE_AIRDROP_CONTRACT_ADDRESS=<airdrop-address> VITE_AIRDROP_TOKEN_ADDRESS=<token-address> npm run dev
+```
 
-| v5 | v6 |
+MetaMask network:
+
+| Field | Value |
 |---|---|
-| `ethers.providers.Web3Provider` | `ethers.BrowserProvider` |
-| `ethers.utils.parseEther` | `ethers.parseEther` |
-| `await contract.deployed()` | `await contract.waitForDeployment()` |
-| `contract.address` | `await contract.getAddress()` |
-| `ethers.utils.keccak256` | `ethers.keccak256` |
+| Network Name | `Hardhat Local` |
+| RPC URL | `http://127.0.0.1:8545` |
+| Chain ID | `1337` |
+| Currency Symbol | `ETH` |
 
-This project uses v6, so pay attention to the syntax changes.
+Claim flow:
+
+1. Open `http://localhost:5173`.
+2. Connect wallet.
+3. Use a Hardhat account from the base allowlist, or use simulated verification only.
+4. Select an allowlisted address and inspect the proof path.
+5. Click “Execute on-chain claim”.
 
 ---
 
-## Related resources
+## 7. Frontend development
 
-- [OpenZeppelin MerkleProof docs](https://docs.openzeppelin.com/contracts/4.x/api/utils#MerkleProof)
-- [Ethers.js v6 migration guide](https://docs.ethers.org/v6/migrating/)
-- [Hardhat docs](https://hardhat.org/docs)
+Frontend entry point: `web/src/App.jsx`.
+
+Current page capabilities:
+
+- `#claim`: claim portal.
+- `#guide`: embedded Markdown development guide.
+- Chinese/English language toggle saved in `localStorage`.
+- Automatic switch request to `VITE_AIRDROP_CHAIN_ID`.
+- Reads wallet ETH balance, MRKL balance, contract MRKL reserve, and claim state.
+- Falls back to demo mode when the target network/contract is unavailable.
+- “Join airdrop” writes the connected wallet into a browser-local demo allowlist only.
+
+Frontend env vars:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VITE_AIRDROP_CONTRACT_ADDRESS` | `0xC4c8D8ce56cDFC9b592F01A300Bdc19b6463563A` | Sepolia airdrop contract |
+| `VITE_AIRDROP_TOKEN_ADDRESS` | `0xd6dB4Efd0Aea1763eD421D4Fa94C123B4E21D8BC` | Sepolia MRKL token |
+| `VITE_AIRDROP_CHAIN_ID` | `11155111` | Sepolia by default |
+
+Common commands:
+
+```bash
+cd web
+npm run dev
+npm run lint
+npm run build
+npm run preview
+```
+
+---
+
+## 8. Sepolia and Vercel deployment
+
+### 8.1 Sepolia contract deployment
+
+Hardhat supports a `sepolia` network with these environment variables:
+
+| Variable | Purpose |
+|---|---|
+| `SEPOLIA_RPC_URL` or `SEPOLIA_RPC` | Sepolia RPC URL |
+| `PRIVATE_KEY` | Deployer private key; keep it local/CI-secret only |
+| `ETHERSCAN_API_KEY` | Optional contract verification API key |
+
+Deploy:
+
+```bash
+cd contracts
+SEPOLIA_RPC_URL=<rpc-url> PRIVATE_KEY=<private-key> npx hardhat run scripts/deploy.js --network sepolia
+```
+
+### 8.2 Sync frontend environment variables
+
+Copy deployment outputs into Vercel:
+
+```text
+VITE_AIRDROP_CHAIN_ID=11155111
+VITE_AIRDROP_CONTRACT_ADDRESS=<AIRDROP_CONTRACT_ADDRESS>
+VITE_AIRDROP_TOKEN_ADDRESS=<AIRDROP_TOKEN_ADDRESS>
+```
+
+Current built-in defaults:
+
+```text
+VITE_AIRDROP_CONTRACT_ADDRESS=0xC4c8D8ce56cDFC9b592F01A300Bdc19b6463563A
+VITE_AIRDROP_TOKEN_ADDRESS=0xd6dB4Efd0Aea1763eD421D4Fa94C123B4E21D8BC
+VITE_AIRDROP_CHAIN_ID=11155111
+```
+
+### 8.3 Vercel build
+
+Root `package.json` provides:
+
+```bash
+npm run build
+```
+
+It:
+
+1. Enters `web`.
+2. Installs frontend dependencies.
+3. Runs `npm run build`.
+4. Moves `web/dist` to root `dist`.
+
+`vercel.json` rewrites every route to `/index.html` for SPA fallback.
+
+---
+
+## 9. Updating the allowlist
+
+### 9.1 Update base data
+
+Edit both files:
+
+- `contracts/scripts/merkletree.cjs`
+- `web/src/utils/merkletree.js`
+
+New entry format:
+
+```javascript
+{ address: '0xYourAddress', amount: '1000' }
+```
+
+### 9.2 Recompute root
+
+```bash
+cd contracts
+node -e "const { getMerkleRoot } = require('./scripts/merkletree.cjs'); console.log(getMerkleRoot());"
+```
+
+### 9.3 Update on-chain state
+
+Two options:
+
+1. Redeploy Token + Airdrop.
+2. Have the owner call `setMerkleRoot(newRoot)` and ensure the airdrop contract has enough MRKL reserve.
+
+Frontend “Join airdrop” only updates browser-local state. It does not update the on-chain root and does not grant real claim eligibility.
+
+---
+
+## 10. Testing and verification
+
+Contract tests:
+
+```bash
+cd contracts
+npm test
+```
+
+Frontend lint:
+
+```bash
+cd web
+npm run lint
+```
+
+Frontend build:
+
+```bash
+cd web
+npm run build
+```
+
+Root deployment build:
+
+```bash
+npm run build
+```
+
+After doc synchronization, check Markdown whitespace:
+
+```bash
+git diff --check -- README.md GUIDE.md GUIDE.en.md PRODUCT.md web/src/content/GUIDE.md web/src/content/GUIDE.en.md
+```
+
+---
+
+## 11. FAQ
+
+### Q1: Why does the real claim button say “Contract not ready”?
+
+The current wallet network does not have deployed code at `VITE_AIRDROP_CONTRACT_ADDRESS`. Switch to the configured `VITE_AIRDROP_CHAIN_ID`, or redeploy and update Vite environment variables.
+
+### Q2: Why is my address not in the allowlist?
+
+Real claims use the connected wallet address. That address must exist in the base allowlist, and the on-chain root must match the current allowlist.
+
+### Q3: Why can I simulate after joining the demo list but not claim on-chain?
+
+Demo join only writes to browser `localStorage`; it does not call the owner function to update `merkleRoot`. Real claims require an on-chain root update.
+
+### Q4: Why is ETH funding no longer required?
+
+The current version distributes ERC20 MRKL, not ETH. The deployment script mints the total MRKL allocation into `MerkelAirdrop`. Users still need ETH only for gas.
+
+### Q5: How do I debug `Invalid proof`?
+
+Check in order:
+
+1. `contracts/scripts/merkletree.cjs` and `web/src/utils/merkletree.js` contain the same base data.
+2. `getMerkleRoot()` equals on-chain `merkleRoot()`.
+3. Wallet address and amount match the allowlist entry exactly.
+4. `VITE_AIRDROP_CONTRACT_ADDRESS` points to the contract on the correct network.
