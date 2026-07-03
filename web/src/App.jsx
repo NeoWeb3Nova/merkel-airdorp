@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { ethers } from 'ethers';
 import guideMarkdownZh from '../../GUIDE.md?raw';
 import guideMarkdownEn from '../../GUIDE.en.md?raw';
-import { getMerkleRoot, getProof, airdropData } from './utils/merkletree';
+import { getMerkleRoot, getProof, airdropData, setAirdropData, mergeAirdropData, isEligible } from './utils/merkletree';
 import ABI from './abi/MerkelAirdrop.json';
 import './App.css';
 
@@ -122,6 +122,18 @@ const translations = {
     guideSource: '内容来源：GUIDE.md',
     guideRepoCta: '查看源码',
     guideClaimCta: '返回领取门户',
+    registerCta: '加入空投',
+    registerCancel: '取消',
+    registerConfirm: '确认加入',
+    registerLabel: 'Demo Registration',
+    registerTitle: '添加到演示白名单',
+    registerCopy: '使用当前链接的钱包地址加入演示空投列表，立即可生成有效的 Merkle Proof。此操作仅影响前端演示，不会更新链上合约。',
+    registerNeedWallet: '请先连接钱包以获取地址',
+    registerInvalidAmount: '请输入有效的空投数量',
+    registerAlreadyEligible: '该地址已在白名单中，可直接选择领取',
+    registerSuccess: ({ address, amount }) => `已添加到演示白名单：${address}\n空投额度：${amount} MRKL\n现在可以生成有效的 Merkle Proof 并模拟领取。`,
+    registerHint: '提示：此演示机制仅修改前端本地状态。真实链上领取需要合约 Owner 更新 Merkle Root。',
+    unregister: '移除',
   },
   en: {
     pageTitle: 'Merkel Airdrop | Verified Claim Portal',
@@ -228,12 +240,23 @@ const translations = {
     guideSource: 'Source: GUIDE.en.md',
     guideRepoCta: 'View source',
     guideClaimCta: 'Back to claim portal',
+    registerCta: 'Join airdrop',
+    registerCancel: 'Cancel',
+    registerConfirm: 'Confirm join',
+    registerLabel: 'Demo registration',
+    registerTitle: 'Add to demo allowlist',
+    registerCopy: 'Use the currently connected wallet address to join the demo airdrop list and instantly generate a valid Merkle Proof. This only affects the frontend demo and does not update the on-chain contract.',
+    registerNeedWallet: 'Please connect your wallet first to get an address',
+    registerInvalidAmount: 'Please enter a valid airdrop amount',
+    registerAlreadyEligible: 'This address is already in the allowlist; select it to claim',
+    registerSuccess: ({ address, amount }) => `Added to demo allowlist: ${address}\nAirdrop allocation: ${amount} MRKL\nYou can now generate a valid Merkle Proof and simulate a claim.`,
+    registerHint: 'Tip: This demo mechanism only modifies local frontend state. Real on-chain claiming requires the contract owner to update the Merkle Root.',
+    unregister: 'Remove',
   },
 };
 
 const formatAmount = (value) => Number(value).toLocaleString('en-US', { maximumFractionDigits: 4 });
 const shortAddress = (address) => address ? `${address.slice(0, 6)}...${address.slice(-4)}` : '--';
-const totalAirdrop = airdropData.reduce((sum, item) => sum + Number(item.amount), 0);
 
 const normalizeRoute = () => (window.location.hash === '#guide' ? 'guide' : 'claim');
 
@@ -437,16 +460,26 @@ function App() {
   const [selectedUser, setSelectedUser] = useState(airdropData[0]);
   const [networkLabel, setNetworkLabel] = useState(translations[language].walletOffline);
   const [contractReady, setContractReady] = useState(false);
+  const [customUsers, setCustomUsers] = useState(() => {
+    try {
+      const saved = localStorage.getItem('merkel-airdrop-custom-users');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+  const [registrationOpen, setRegistrationOpen] = useState(false);
+  const [registrationAmount, setRegistrationAmount] = useState('100');
 
   const t = translations[language];
   const guideMarkdown = language === 'zh' ? guideMarkdownZh : guideMarkdownEn;
   const guideBlocks = useMemo(() => parseMarkdown(guideMarkdown), [guideMarkdown]);
+  const totalAirdrop = airdropData.reduce((sum, item) => sum + Number(item.amount), 0);
   const selectedProof = selectedUser ? getProof(selectedUser.address, selectedUser.amount) : [];
 
   useEffect(() => {
-    const root = getMerkleRoot();
-    setMerkleRoot(root);
-  }, []);
+    const merged = mergeAirdropData(customUsers);
+    setAirdropData(merged);
+    setMerkleRoot(getMerkleRoot(merged));
+  }, [customUsers]);
 
   useEffect(() => {
     const onHashChange = () => setPage(normalizeRoute());
@@ -598,6 +631,46 @@ function App() {
       tokenSymbol,
       proofLength: proof.length,
     }), 'success');
+  };
+
+  const registerForAirdrop = () => {
+    if (!account) {
+      setStatus(t.registerNeedWallet, 'error');
+      return;
+    }
+    if (!registrationAmount || Number(registrationAmount) <= 0) {
+      setStatus(t.registerInvalidAmount, 'error');
+      return;
+    }
+    const amountStr = String(Number(registrationAmount));
+    const normalizedAddress = account.toLowerCase();
+
+    if (isEligible(account)) {
+      setStatus(t.registerAlreadyEligible, 'notice');
+      setRegistrationOpen(false);
+      // Select the existing entry
+      const existing = airdropData.find(item => item.address.toLowerCase() === normalizedAddress);
+      if (existing) setSelectedUser(existing);
+      return;
+    }
+
+    const newEntry = { address: account, amount: amountStr };
+    const next = [...customUsers, newEntry];
+    setCustomUsers(next);
+    localStorage.setItem('merkel-airdrop-custom-users', JSON.stringify(next));
+    setSelectedUser(newEntry);
+    setStatus(t.registerSuccess({ address: account, amount: amountStr }), 'success');
+    setRegistrationOpen(false);
+    setRegistrationAmount('100');
+  };
+
+  const unregister = (address) => {
+    const next = customUsers.filter(u => u.address.toLowerCase() !== address.toLowerCase());
+    setCustomUsers(next);
+    localStorage.setItem('merkel-airdrop-custom-users', JSON.stringify(next));
+    if (selectedUser?.address.toLowerCase() === address.toLowerCase()) {
+      setSelectedUser(airdropData.find(u => u.address.toLowerCase() !== address.toLowerCase()) || null);
+    }
   };
 
   const Header = () => (
@@ -774,7 +847,60 @@ function App() {
             >
               {t.simulateVerify}
             </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => setRegistrationOpen(!registrationOpen)}
+            >
+              {registrationOpen ? t.registerCancel : t.registerCta}
+            </button>
           </div>
+
+          {registrationOpen && (
+            <div className="panel registration-panel" style={{ marginTop: '12px', borderColor: 'var(--amber-border)', background: 'var(--amber-glow)' }}>
+              <div className="section-heading compact-heading">
+                <p className="label">{t.registerLabel}</p>
+                <h3>{t.registerTitle}</h3>
+                <p>{t.registerCopy}</p>
+              </div>
+              <div className="data-row" style={{ marginBottom: '12px' }}>
+                <span>{t.walletAddress}</span>
+                <strong className="mono">{account || t.walletOffline}</strong>
+              </div>
+              <div className="data-row" style={{ marginBottom: '12px' }}>
+                <span>{t.allocation}</span>
+                <input
+                  type="number"
+                  className="mono"
+                  value={registrationAmount}
+                  onChange={(e) => setRegistrationAmount(e.target.value)}
+                  min="1"
+                  step="1"
+                  style={{
+                    background: 'var(--bg-base)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '8px 12px',
+                    color: 'var(--text-primary)',
+                    fontSize: '0.9rem',
+                    width: '120px',
+                    textAlign: 'right',
+                  }}
+                />
+                <span>{tokenSymbol}</span>
+              </div>
+              <div className="button-group" style={{ marginTop: 0 }}>
+                <button className="btn btn-primary" onClick={registerForAirdrop} disabled={!account}>
+                  {t.registerConfirm}
+                </button>
+                <button className="btn btn-secondary" onClick={() => setRegistrationOpen(false)}>
+                  {t.registerCancel}
+                </button>
+              </div>
+              <p className="hint" style={{ margin: '10px 0 0', fontSize: '0.78rem', border: 'none', background: 'transparent', padding: '0' }}>
+                {t.registerHint}
+              </p>
+            </div>
+          )}
 
           {claimStatus && (
             <div className={`status ${statusTone}`} role="status" aria-live="polite">
@@ -851,6 +977,7 @@ function App() {
           <div className="list-body" role="listbox" aria-label={t.allowlistTitle}>
             {airdropData.map((item) => {
               const isSelected = selectedUser?.address === item.address;
+              const isCustom = customUsers.some(u => u.address.toLowerCase() === item.address.toLowerCase());
               return (
                 <button
                   key={item.address}
@@ -859,10 +986,24 @@ function App() {
                   onClick={() => setSelectedUser(item)}
                   aria-selected={isSelected}
                   role="option"
+                  style={{ position: 'relative' }}
                 >
                   <span className="mono" title={item.address}>{item.address}</span>
                   <strong>{item.amount} {tokenSymbol}</strong>
-                  <span className={`status-pill ${isSelected ? 'success' : ''}`}>{isSelected ? t.selected : t.eligible}</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span className={`status-pill ${isSelected ? 'success' : ''}`}>{isSelected ? t.selected : t.eligible}</span>
+                    {isCustom && (
+                      <button
+                        type="button"
+                        className="btn btn-danger compact"
+                        onClick={(e) => { e.stopPropagation(); unregister(item.address); }}
+                        title={t.unregister}
+                        style={{ padding: '0 8px', minHeight: '28px', fontSize: '0.72rem' }}
+                      >
+                        {t.unregister}
+                      </button>
+                    )}
+                  </span>
                 </button>
               );
             })}

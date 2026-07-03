@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
 
-// Example airdrop data (all checksummed addresses)
-const airdropData = [
+// Base airdrop data (all checksummed addresses) — immutable seed
+export const BASE_AIRDROP_DATA = [
   { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', amount: '1000' },
   { address: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', amount: '2000' },
   { address: '0x90F79bf6EB2c4f870365E785982E1f101E93b906', amount: '500' },
@@ -12,6 +12,13 @@ const airdropData = [
   { address: '0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f', amount: '1200' },
   { address: '0x52e598665a4eC24D671F5EeE8dDA970166C859c8', amount: '1000' },
 ];
+
+// Backward compat: keep airdropData as mutable reference for old imports
+export let airdropData = [...BASE_AIRDROP_DATA];
+
+export function setAirdropData(data) {
+  airdropData = data;
+}
 
 // Hash leaf: keccak256(abi.encodePacked(address, uint256))
 function hashLeaf(address, amount) {
@@ -48,24 +55,24 @@ function buildTree(leaves) {
   return layers;
 }
 
-// Generate Merkle Tree
-export function generateMerkleTree() {
-  const leaves = airdropData.map(item => hashLeaf(item.address, item.amount));
+// Generate Merkle Tree from provided data (defaults to current airdropData)
+export function generateMerkleTree(data = airdropData) {
+  const leaves = data.map(item => hashLeaf(item.address, item.amount));
   const layers = buildTree(leaves);
-  return { layers, data: airdropData };
+  return { layers, data };
 }
 
-// Get Merkle Root
-export function getMerkleRoot() {
-  const { layers } = generateMerkleTree();
+// Get Merkle Root from provided data (defaults to current airdropData)
+export function getMerkleRoot(data = airdropData) {
+  const { layers } = generateMerkleTree(data);
   return layers[layers.length - 1][0];
 }
 
-// Get proof for a specific address/amount
-export function getProof(address, amount) {
-  const leaves = airdropData.map(item => hashLeaf(item.address, item.amount));
+// Get proof for a specific address/amount within provided data
+export function getProof(address, amount, data = airdropData) {
+  const leaves = data.map(item => hashLeaf(item.address, item.amount));
   const targetLeaf = hashLeaf(address, amount);
-  
+
   // Find index of target leaf
   let index = -1;
   for (let i = 0; i < leaves.length; i++) {
@@ -74,12 +81,12 @@ export function getProof(address, amount) {
       break;
     }
   }
-  
+
   if (index === -1) return []; // Not in list
-  
+
   const layers = buildTree(leaves);
   const proof = [];
-  
+
   for (let i = 0; i < layers.length - 1; i++) {
     const layer = layers[i];
     const siblingIndex = index % 2 === 0 ? index + 1 : index - 1;
@@ -88,7 +95,7 @@ export function getProof(address, amount) {
     }
     index = Math.floor(index / 2);
   }
-  
+
   return proof;
 }
 
@@ -107,4 +114,20 @@ export function verifyProof(root, proof, address, amount) {
   return hash === root;
 }
 
-export { airdropData };
+// Helper: merge base + custom entries, deduplicate by address (first wins)
+export function mergeAirdropData(custom = []) {
+  const seen = new Set();
+  const merged = [];
+  for (const item of [...BASE_AIRDROP_DATA, ...custom]) {
+    if (!seen.has(item.address.toLowerCase())) {
+      seen.add(item.address.toLowerCase());
+      merged.push(item);
+    }
+  }
+  return merged;
+}
+
+// Helper: check if address is in data list
+export function isEligible(address, data = airdropData) {
+  return data.some(item => item.address.toLowerCase() === address.toLowerCase());
+}
